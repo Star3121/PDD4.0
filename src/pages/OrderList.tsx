@@ -16,10 +16,12 @@ import { toast } from 'react-hot-toast';
 
 type ExportBackgroundType = 'white' | 'transparent';
 type ExportImageFormat = 'png' | 'jpg';
+type ExportQualityLevel = 'standard' | 'hd' | 'ultra';
 
 type ExportImageOptions = {
   backgroundType: ExportBackgroundType;
   imageFormat: ExportImageFormat;
+  qualityLevel: ExportQualityLevel;
 };
 
 type ImportStatusFailure = {
@@ -68,9 +70,11 @@ const OrderList: React.FC = () => {
   const [showExportImageOptionsModal, setShowExportImageOptionsModal] = useState(false);
   const [exportImageBackgroundType, setExportImageBackgroundType] = useState<ExportBackgroundType>('transparent');
   const [exportImageFormat, setExportImageFormat] = useState<ExportImageFormat>('png');
+  const [exportImageQualityLevel, setExportImageQualityLevel] = useState<ExportQualityLevel>('hd');
   const [currentExportOptions, setCurrentExportOptions] = useState<ExportImageOptions>({
     backgroundType: 'transparent',
-    imageFormat: 'png'
+    imageFormat: 'png',
+    qualityLevel: 'hd'
   });
   const [isImportingStatus, setIsImportingStatus] = useState(false);
   const [showImportProgressModal, setShowImportProgressModal] = useState(false);
@@ -598,6 +602,7 @@ const OrderList: React.FC = () => {
     setPendingExportOrders(selectedOrdersList);
     setExportImageBackgroundType('transparent');
     setExportImageFormat('png');
+    setExportImageQualityLevel('hd');
     setShowExportImageOptionsModal(true);
   };
 
@@ -610,7 +615,8 @@ const OrderList: React.FC = () => {
   const handleConfirmExportImageOptions = async () => {
     const options: ExportImageOptions = {
       backgroundType: exportImageBackgroundType,
-      imageFormat: exportImageFormat
+      imageFormat: exportImageFormat,
+      qualityLevel: exportImageQualityLevel
     };
     setCurrentExportOptions(options);
     setShowExportImageOptionsModal(false);
@@ -633,6 +639,16 @@ const OrderList: React.FC = () => {
   const normalizeExportRenderBackgroundType = (options: ExportImageOptions): 'white' | 'transparent' => {
     if (options.imageFormat === 'jpg') return 'white';
     return options.backgroundType;
+  };
+
+  const resolveExportClarityConfig = (options: ExportImageOptions) => {
+    if (options.qualityLevel === 'ultra') {
+      return { scale: 3, quality: 1 };
+    }
+    if (options.qualityLevel === 'hd') {
+      return { scale: 2, quality: 0.95 };
+    }
+    return { scale: 1, quality: 0.9 };
   };
 
   const convertPngDataUrlToJpgDataUrl = async (dataUrl: string): Promise<string> => {
@@ -801,6 +817,7 @@ const OrderList: React.FC = () => {
   // 生成订单对账表HTML
   const generateOrderHTML = async (ordersToExport: Order[], options: ExportImageOptions): Promise<string> => {
     const renderBackgroundType = normalizeExportRenderBackgroundType(options);
+    const clarityConfig = resolveExportClarityConfig(options);
     let htmlContent = `
 <!DOCTYPE html>
 <html>
@@ -872,6 +889,12 @@ const OrderList: React.FC = () => {
                   {
                     width: exportPage.width,
                     height: exportPage.height
+                  },
+                  {
+                    maxWidth: Math.round((exportPage.width || 3000) * clarityConfig.scale),
+                    imageFormat: options.imageFormat === 'jpg' ? 'jpeg' : 'png',
+                    quality: clarityConfig.quality,
+                    useOriginalAssets: true
                   }
                 );
                 const htmlImageDataUrl = options.imageFormat === 'jpg'
@@ -949,6 +972,7 @@ const OrderList: React.FC = () => {
     folderPrefix: string = ''
   ) => {
     const renderBackgroundType = normalizeExportRenderBackgroundType(options);
+    const clarityConfig = resolveExportClarityConfig(options);
     for (let i = 0; i < ordersToExport.length; i++) {
       const order = ordersToExport[i];
       const orderNumber = String(i + 1).padStart(2, '0');
@@ -969,6 +993,12 @@ const OrderList: React.FC = () => {
                 {
                   width: exportPage.width,
                   height: exportPage.height
+                },
+                {
+                  maxWidth: Math.round((exportPage.width || 3000) * clarityConfig.scale),
+                  imageFormat: options.imageFormat === 'jpg' ? 'jpeg' : 'png',
+                  quality: clarityConfig.quality,
+                  useOriginalAssets: true
                 }
               );
               const exportDataUrl = options.imageFormat === 'jpg'
@@ -1759,8 +1789,10 @@ const OrderList: React.FC = () => {
         isLoading={isExporting}
         backgroundType={exportImageBackgroundType}
         imageFormat={exportImageFormat}
+        qualityLevel={exportImageQualityLevel}
         onBackgroundTypeChange={setExportImageBackgroundType}
         onImageFormatChange={setExportImageFormat}
+        onQualityLevelChange={setExportImageQualityLevel}
         onCancel={handleCancelExportImageOptions}
         onConfirm={handleConfirmExportImageOptions}
       />

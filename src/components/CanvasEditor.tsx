@@ -341,7 +341,8 @@ const CanvasEditor = forwardRef<CanvasEditorRef, CanvasEditorProps>((props, ref)
     '_cropXRatio',
     '_cropYRatio',
     '_cropWidthRatio',
-    '_cropHeightRatio'
+    '_cropHeightRatio',
+    '_isStrokeOverlay'
   ];
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -2449,7 +2450,9 @@ const rebuildFrameImagePairs = () => {
     if (!canvasInstance.current) return false;
     return canvasInstance.current.getObjects().some((obj) => {
       if (!isImageObject(obj)) return false;
+      if ((obj as any)._isStrokeOverlay) return false;
       const uploadStatus = String((obj as any)._assetUploadStatus || '');
+      if (uploadStatus === 'generated') return false;
       if (uploadStatus === 'uploading' || uploadStatus === 'failed' || uploadStatus === 'local') {
         return true;
       }
@@ -4850,6 +4853,7 @@ const rebuildFrameImagePairs = () => {
           excludeFromExport: true,
         });
         (overlay as any)._isStrokeOverlay = true;
+        (overlay as any)._assetUploadStatus = 'generated';
         (image as any)._strokeOverlay = overlay;
         canvasInstance.current.add(overlay);
       } else {
@@ -4867,6 +4871,8 @@ const rebuildFrameImagePairs = () => {
           skewX: image.skewX,
           skewY: image.skewY,
         });
+        (overlay as any)._isStrokeOverlay = true;
+        (overlay as any)._assetUploadStatus = 'generated';
       }
       (image as any)._strokePadding = padding;
       (image as any)._strokeRenderScale = renderScale;
@@ -5821,7 +5827,9 @@ const rebuildFrameImagePairs = () => {
       if (!canvasInstance.current) return '';
       const canvasData = canvasInstance.current.toJSON(CANVAS_CUSTOM_PROPS) as Record<string, any>;
       const objects = Array.isArray(canvasData.objects) ? canvasData.objects : [];
+      canvasData.objects = objects.filter((node: Record<string, any>) => !node?._isStrokeOverlay);
       objects.forEach((node: Record<string, any>) => {
+        if (node?._isStrokeOverlay) return;
         if (!(node?._isImage || node?._isFrameImage || node?.type === 'image')) return;
         normalizeImageObjectForSerialization(node);
       });

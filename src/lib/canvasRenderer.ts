@@ -535,7 +535,8 @@ export async function renderCanvasToHighResImage(
     const safeMaxWidth = typeof options?.maxWidth === 'number' && Number.isFinite(options.maxWidth) && options.maxWidth > 0
       ? options.maxWidth
       : displayWidth;
-    const multiplier = Math.min(1, safeMaxWidth / displayWidth);
+    const rawMultiplier = safeMaxWidth / displayWidth;
+    const multiplier = Math.min(4, Math.max(0.1, Number.isFinite(rawMultiplier) ? rawMultiplier : 1));
     const imageFormat = options?.imageFormat === 'jpeg' ? 'jpeg' : 'png';
     const normalizedQuality = Math.max(0.1, Math.min(1, Number(options?.quality ?? 1) || 1));
     const preparedCanvasData = prepareCanvasDataForRender(

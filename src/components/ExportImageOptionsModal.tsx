@@ -2,14 +2,17 @@ import React, { useEffect } from 'react';
 
 type ExportBackgroundType = 'white' | 'transparent';
 type ExportImageFormat = 'png' | 'jpg';
+type ExportQualityLevel = 'standard' | 'hd' | 'ultra';
 
 interface ExportImageOptionsModalProps {
   isOpen: boolean;
   isLoading: boolean;
   backgroundType: ExportBackgroundType;
   imageFormat: ExportImageFormat;
+  qualityLevel: ExportQualityLevel;
   onBackgroundTypeChange: (value: ExportBackgroundType) => void;
   onImageFormatChange: (value: ExportImageFormat) => void;
+  onQualityLevelChange: (value: ExportQualityLevel) => void;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -19,8 +22,10 @@ const ExportImageOptionsModal: React.FC<ExportImageOptionsModalProps> = ({
   isLoading,
   backgroundType,
   imageFormat,
+  qualityLevel,
   onBackgroundTypeChange,
   onImageFormatChange,
+  onQualityLevelChange,
   onConfirm,
   onCancel
 }) => {
@@ -117,6 +122,47 @@ const ExportImageOptionsModal: React.FC<ExportImageOptionsModalProps> = ({
                   className="h-4 w-4"
                 />
                 <span className="ml-2 text-sm text-gray-700">JPG</span>
+              </label>
+            </div>
+          </div>
+          <div className="rounded-lg border border-gray-200 p-4">
+            <div className="mb-3 text-sm font-medium text-gray-800">清晰度档位</div>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <label className="flex cursor-pointer items-center rounded-md border border-gray-200 px-3 py-2 hover:bg-gray-50">
+                <input
+                  type="radio"
+                  name="export-quality-level"
+                  value="standard"
+                  checked={qualityLevel === 'standard'}
+                  onChange={() => onQualityLevelChange('standard')}
+                  disabled={isLoading}
+                  className="h-4 w-4"
+                />
+                <span className="ml-2 text-sm text-gray-700">标准</span>
+              </label>
+              <label className="flex cursor-pointer items-center rounded-md border border-gray-200 px-3 py-2 hover:bg-gray-50">
+                <input
+                  type="radio"
+                  name="export-quality-level"
+                  value="hd"
+                  checked={qualityLevel === 'hd'}
+                  onChange={() => onQualityLevelChange('hd')}
+                  disabled={isLoading}
+                  className="h-4 w-4"
+                />
+                <span className="ml-2 text-sm text-gray-700">高清</span>
+              </label>
+              <label className="flex cursor-pointer items-center rounded-md border border-gray-200 px-3 py-2 hover:bg-gray-50">
+                <input
+                  type="radio"
+                  name="export-quality-level"
+                  value="ultra"
+                  checked={qualityLevel === 'ultra'}
+                  onChange={() => onQualityLevelChange('ultra')}
+                  disabled={isLoading}
+                  className="h-4 w-4"
+                />
+                <span className="ml-2 text-sm text-gray-700">超清</span>
               </label>
             </div>
           </div>
