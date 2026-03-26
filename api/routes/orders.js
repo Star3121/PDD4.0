@@ -13,6 +13,7 @@ router.get('/', async (req, res) => {
       pageSize = 20,
       search = '',
       mark = '',
+      productCategory = '',
       exportTimeFilter = '',
       exportStartDate = '',
       exportEndDate = '',
@@ -22,7 +23,7 @@ router.get('/', async (req, res) => {
 
     // 参数验证
     const pageNum = Math.max(1, parseInt(page));
-    const pageSizeNum = Math.max(1, parseInt(pageSize)); // 移除页面大小限制以支持全量显示
+    const pageSizeNum = Math.min(200, Math.max(1, parseInt(pageSize)));
     const offset = (pageNum - 1) * pageSizeNum;
 
     // 构建查询条件
@@ -45,6 +46,11 @@ router.get('/', async (req, res) => {
     if (mark) {
       whereConditions.push('mark = ?');
       queryParams.push(mark);
+    }
+
+    if (productCategory) {
+      whereConditions.push('product_category = ?');
+      queryParams.push(productCategory);
     }
 
     // 导出时间筛选（仅在mark为exported时生效）
@@ -102,11 +108,6 @@ router.get('/', async (req, res) => {
     const validSortBy = allowedSortFields.includes(sortBy) ? sortBy : 'created_at';
     const validSortOrder = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
 
-    // 获取总数（用于分页信息）
-    const countQuery = `SELECT COUNT(*) as total FROM orders ${whereClause}`;
-    const countResult = await db.query(countQuery, queryParams);
-    const total = countResult[0].total;
-
     // 获取分页数据
     const dataQuery = `
       SELECT * FROM orders 
@@ -115,6 +116,20 @@ router.get('/', async (req, res) => {
       LIMIT ${pageSizeNum} OFFSET ${offset}
     `;
     const orders = await db.query(dataQuery, queryParams);
+    let total = offset + orders.length;
+    try {
+      const countQuery = `SELECT COUNT(*) as total FROM orders ${whereClause}`;
+      const countResult = await Promise.race([
+        db.query(countQuery, queryParams),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('count query timeout')), 3000))
+      ]);
+      total = Number(countResult?.[0]?.total) || total;
+    } catch (countError) {
+      console.warn('订单总数统计超时，回退为当前页估算:', countError);
+      if (orders.length === pageSizeNum) {
+        total += 1;
+      }
+    }
 
     // 计算分页信息
     const totalPages = Math.ceil(total / pageSizeNum);
@@ -134,6 +149,7 @@ router.get('/', async (req, res) => {
       filters: {
         search,
         mark,
+        productCategory,
         sortBy: validSortBy,
         sortOrder: validSortOrder
       }
@@ -144,10 +160,128 @@ router.get('/', async (req, res) => {
   }
 });
 
+router.get('/categories', async (req, res) => {
+  try {
+    const {
+      search = '',
+      mark = '',
+      exportTimeFilter = '',
+      exportStartDate = '',
+      exportEndDate = ''
+    } = req.query;
+
+    let whereConditions = ['product_category IS NOT NULL', "TRIM(product_category) != ''"];
+    let queryParams = [];
+
+    if (search) {
+      whereConditions.push(`(
+        order_number LIKE ? OR
+        customer_name LIKE ? OR
+        phone LIKE ? OR
+        address LIKE ?
+      )`);
+      const searchPattern = `%${search}%`;
+      queryParams.push(searchPattern, searchPattern, searchPattern, searchPattern);
+    }
+
+    if (mark) {
+      whereConditions.push('mark = ?');
+      queryParams.push(mark);
+    }
+
+    if (mark === 'exported' && exportTimeFilter) {
+      const now = new Date();
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+
+      const formatToDbTime = (date) => {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        const seconds = String(date.getSeconds()).padStart(2, '0');
+        return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+      };
+
+      if (exportTimeFilter === 'today') {
+        whereConditions.push('exported_at >= ? AND exported_at < ?');
+        queryParams.push(
+          formatToDbTime(today),
+          formatToDbTime(tomorrow)
+        );
+      } else if (exportTimeFilter === 'yesterday') {
+        whereConditions.push('exported_at >= ? AND exported_at < ?');
+        queryParams.push(
+          formatToDbTime(yesterday),
+          formatToDbTime(today)
+        );
+      } else if (exportTimeFilter === 'custom' && exportStartDate && exportEndDate) {
+        const startDate = new Date(exportStartDate);
+        const endDate = new Date(exportEndDate);
+        endDate.setHours(23, 59, 59, 999);
+
+        whereConditions.push('exported_at >= ? AND exported_at <= ?');
+        queryParams.push(
+          formatToDbTime(startDate),
+          formatToDbTime(endDate)
+        );
+      }
+    }
+
+    const whereClause = `WHERE ${whereConditions.join(' AND ')}`;
+    const categories = await db.query(
+      `SELECT product_category FROM orders ${whereClause} ORDER BY product_category ASC LIMIT 500`,
+      queryParams
+    );
+
+    const uniqueCategories = Array.from(
+      new Set(
+        categories
+          .map(item => item.product_category)
+          .filter(category => typeof category === 'string' && category.trim() !== '')
+      )
+    );
+
+    res.json(uniqueCategories);
+  } catch (error) {
+    console.error('获取产品分类失败:', error);
+    res.status(500).json({ error: '获取产品分类失败' });
+  }
+});
+
 // 获取订单统计信息
 router.get('/stats', async (req, res) => {
   try {
-    const { customStartDate, customEndDate } = req.query;
+    const { customStartDate, customEndDate, search = '', productCategory = '' } = req.query;
+
+    let baseWhereConditions = [];
+    let baseParams = [];
+
+    if (search) {
+      baseWhereConditions.push(`(
+        order_number LIKE ? OR
+        customer_name LIKE ? OR
+        phone LIKE ? OR
+        address LIKE ?
+      )`);
+      const searchPattern = `%${search}%`;
+      baseParams.push(searchPattern, searchPattern, searchPattern, searchPattern);
+    }
+
+    if (productCategory) {
+      baseWhereConditions.push('product_category = ?');
+      baseParams.push(productCategory);
+    }
+
+    const baseWhereClause = baseWhereConditions.length > 0 ? ` AND ${baseWhereConditions.join(' AND ')}` : '';
+    const readCount = (rows) => {
+      const value = rows?.[0]?.count ?? rows?.[0]?.total ?? 0;
+      return Number(value) || 0;
+    };
 
     // 1. 基础状态统计 (mark 分组)
     // 使用多次查询代替GROUP BY，以确保Supabase适配器兼容性
@@ -167,9 +301,11 @@ router.get('/stats', async (req, res) => {
 
     // 并行执行所有状态的计数查询
     await Promise.all(marks.map(async (mark) => {
-      // SupabaseDatabase.query 处理 COUNT(*) 时返回 [{ total: count }]
-      const result = await db.query('SELECT COUNT(*) as count FROM orders WHERE mark = ?', [mark]);
-      const count = result[0]?.total || 0;
+      const result = await db.query(
+        `SELECT COUNT(*) as count FROM orders WHERE mark = ?${baseWhereClause}`,
+        [mark, ...baseParams]
+      );
+      const count = readCount(result);
       stats[mark] = count;
       stats.total += count;
     }));
@@ -200,17 +336,17 @@ router.get('/stats', async (req, res) => {
 
     // 查询今天导出数量
     const todayResult = await db.query(
-      'SELECT COUNT(*) as count FROM orders WHERE mark = ? AND exported_at >= ? AND exported_at < ?',
-      ['exported', todayStr, tomorrowStr]
+      `SELECT COUNT(*) as count FROM orders WHERE mark = ? AND exported_at >= ? AND exported_at < ?${baseWhereClause}`,
+      ['exported', todayStr, tomorrowStr, ...baseParams]
     );
-    stats.exportedToday = todayResult[0]?.total || 0;
+    stats.exportedToday = readCount(todayResult);
 
     // 查询昨天导出数量
     const yesterdayResult = await db.query(
-      'SELECT COUNT(*) as count FROM orders WHERE mark = ? AND exported_at >= ? AND exported_at < ?',
-      ['exported', yesterdayStr, todayStr]
+      `SELECT COUNT(*) as count FROM orders WHERE mark = ? AND exported_at >= ? AND exported_at < ?${baseWhereClause}`,
+      ['exported', yesterdayStr, todayStr, ...baseParams]
     );
-    stats.exportedYesterday = yesterdayResult[0]?.total || 0;
+    stats.exportedYesterday = readCount(yesterdayResult);
 
     // 3. 自定义时间范围统计 (如果有参数)
     if (customStartDate && customEndDate) {
@@ -219,10 +355,10 @@ router.get('/stats', async (req, res) => {
       endDate.setHours(23, 59, 59, 999); // 包含结束日期的整天
 
       const customResult = await db.query(
-        'SELECT COUNT(*) as count FROM orders WHERE mark = ? AND exported_at >= ? AND exported_at <= ?',
-        ['exported', formatToDbTime(startDate), formatToDbTime(endDate)]
+        `SELECT COUNT(*) as count FROM orders WHERE mark = ? AND exported_at >= ? AND exported_at <= ?${baseWhereClause}`,
+        ['exported', formatToDbTime(startDate), formatToDbTime(endDate), ...baseParams]
       );
-      stats.exportedCustom = customResult[0]?.total || 0;
+      stats.exportedCustom = readCount(customResult);
     }
 
     res.json(stats);

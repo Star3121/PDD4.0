@@ -18,13 +18,41 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 // 新增：检测是否运行在 Vercel Serverless 环境
 const isServerless = !!process.env.VERCEL;
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY;
+const hasSupabaseConfig = Boolean(supabaseUrl && supabaseKey);
+let dbProvider = 'sqlite';
 
 // 初始化数据库 - 优先使用Supabase，回退到SQLite
 let db;
 try {
-  if (process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY)) {
-    db = supabaseDb;
-    console.log('使用Supabase数据库');
+  if (hasSupabaseConfig) {
+    if (isServerless) {
+      db = supabaseDb;
+      dbProvider = 'supabase';
+      console.log('使用Supabase数据库');
+    } else {
+      let supabaseReady = false;
+      try {
+        await Promise.race([
+          supabaseDb.query('SELECT COUNT(*) as total FROM orders LIMIT 1', []),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('supabase ping timeout')), 5000))
+        ]);
+        supabaseReady = true;
+      } catch (supabaseError) {
+        console.error('Supabase连通性检测失败，回退SQLite:', supabaseError);
+      }
+      if (supabaseReady) {
+        db = supabaseDb;
+        dbProvider = 'supabase';
+        console.log('使用Supabase数据库');
+      } else {
+        const mod = await import('./database.js');
+        db = new mod.Database();
+        dbProvider = 'sqlite';
+        console.log('使用SQLite数据库（Supabase不可用）');
+      }
+    }
   } else {
     if (isServerless) {
       console.error('Vercel Serverless 环境缺少 Supabase 配置，无法使用本地SQLite。');
@@ -37,6 +65,7 @@ try {
       // 动态导入SQLite数据库，仅在非Serverless环境使用
       const mod = await import('./database.js');
       db = new mod.Database();
+      dbProvider = 'sqlite';
       console.log('使用SQLite数据库');
     }
   }
@@ -46,6 +75,7 @@ try {
   if (!isServerless) {
     const mod = await import('./database.js');
     db = new mod.Database();
+    dbProvider = 'sqlite';
   }
 }
 
@@ -75,6 +105,7 @@ if (!isServerless) {
     path.join(process.cwd(), 'uploads/templates'),
     path.join(process.cwd(), 'uploads/designs'),
     path.join(process.cwd(), 'uploads/images'),
+    path.join(process.cwd(), 'uploads/fonts'),
     path.join(process.cwd(), 'temp')
   ];
 
@@ -143,10 +174,30 @@ app.use('/api/files', filesRouter);
 
 // 健康检查
 app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
-    timestamp: new Date().toISOString(),
-    database: process.env.SUPABASE_URL ? 'supabase' : 'sqlite'
+  Promise.race([
+    db?.query?.('SELECT COUNT(*) as total FROM orders LIMIT 1', []),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('db ping timeout')), 1500))
+  ]).then(() => {
+    res.json({ 
+      status: 'OK', 
+      timestamp: new Date().toISOString(),
+      database: dbProvider,
+      db_ready: true,
+      serverless: isServerless,
+      has_supabase_url: Boolean(supabaseUrl),
+      has_supabase_key: Boolean(supabaseKey)
+    });
+  }).catch((error) => {
+    res.status(503).json({
+      status: 'DEGRADED',
+      timestamp: new Date().toISOString(),
+      database: dbProvider,
+      db_ready: false,
+      db_error: error instanceof Error ? error.message : 'unknown',
+      serverless: isServerless,
+      has_supabase_url: Boolean(supabaseUrl),
+      has_supabase_key: Boolean(supabaseKey)
+    });
   });
 });
 

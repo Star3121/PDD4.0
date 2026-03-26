@@ -129,6 +129,33 @@ const testFrameInteraction = {
     console.log('  - 图片显示虚线边框');
   },
 
+  testFrameRotationSync: function() {
+    console.log('\n--- 测试6: 相框旋转同步图片 ---');
+    console.log('✅ 先选中含图相框，拖动旋转手柄');
+    console.log('✅ 观察相框与图片旋转角度是否一致');
+    console.log('✅ 观察旋转过程是否实时同步');
+  },
+
+  testEmptyFrameRotation: function() {
+    console.log('\n--- 测试7: 空相框旋转与后续上传 ---');
+    console.log('✅ 选中空相框并旋转到任意角度');
+    console.log('✅ 双击上传图片');
+    console.log('✅ 观察图片是否自动应用相同旋转角度');
+  },
+
+  testDragFreeImageIntoFrame: function() {
+    console.log('\n--- 测试8: 自由图片拖拽进入相框 ---');
+    console.log('✅ 在画布中选择一张自由图片（不在相框中）');
+    console.log('✅ 拖拽图片进入相框，观察相框半透明预览');
+    console.log('✅ 松开鼠标后图片应进入相框');
+  },
+
+  testDragFrameImageBlocked: function() {
+    console.log('\n--- 测试9: 相框内图片拖拽拦截 ---');
+    console.log('✅ 选中相框内图片尝试拖拽到其他相框');
+    console.log('✅ 应提示无法拖拽并保持原相框内');
+  },
+
   // 运行所有测试
   runAllTests: function() {
     console.log('开始运行所有测试...');
@@ -156,6 +183,22 @@ const testFrameInteraction = {
       console.log('- 图片编辑模式的半透明遮罩');
       console.log('- 模式切换的流畅性');
     }, 4000);
+
+    setTimeout(() => {
+      this.testFrameRotationSync();
+    }, 5000);
+
+    setTimeout(() => {
+      this.testEmptyFrameRotation();
+    }, 6000);
+
+    setTimeout(() => {
+      this.testDragFreeImageIntoFrame();
+    }, 7000);
+
+    setTimeout(() => {
+      this.testDragFrameImageBlocked();
+    }, 8000);
   }
 };
 

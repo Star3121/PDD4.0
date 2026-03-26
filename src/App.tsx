@@ -5,6 +5,7 @@ import CreateOrder from './pages/CreateOrder';
 import DesignEditor from './pages/DesignEditor';
 import DesignPreview from './pages/DesignPreview';
 import TemplateLibraryPage from './pages/TemplateLibraryPage';
+import TemplateDesignEditor from './pages/TemplateDesignEditor';
 
 function App() {
   return (
@@ -16,6 +17,7 @@ function App() {
           <Route path="/design/:orderId" element={<DesignEditor />} />
           <Route path="/preview/:orderId" element={<DesignPreview />} />
           <Route path="/templates" element={<TemplateLibraryPage />} />
+          <Route path="/template-design" element={<TemplateDesignEditor />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </div>

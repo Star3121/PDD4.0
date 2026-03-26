@@ -222,6 +222,10 @@ class StorageService {
 
     // 1. 上传原图任务
     tasks.push(this._uploadSingle(bucket, filename, localFilePath, mimeType));
+    if (bucket === 'designs') {
+      await Promise.all(tasks);
+      return;
+    }
 
     // 仅对图片生成缩略图
     if (mimeType.startsWith('image/')) {
@@ -238,6 +242,7 @@ class StorageService {
             await this._uploadSingle(bucket, `medium_${filename}`, mediumBuffer, mimeType);
           } catch (error) {
             console.error(`[StorageService] Medium thumbnail failed for ${filename}:`, error);
+            await this._uploadSingle(bucket, `medium_${filename}`, imageBuffer, mimeType);
           }
         })();
         tasks.push(mediumTask);
@@ -251,6 +256,7 @@ class StorageService {
             await this._uploadSingle(bucket, `thumb_${filename}`, thumbBuffer, mimeType);
           } catch (error) {
             console.error(`[StorageService] Small thumbnail failed for ${filename}:`, error);
+            await this._uploadSingle(bucket, `thumb_${filename}`, imageBuffer, mimeType);
           }
         })();
         tasks.push(thumbTask);
@@ -271,7 +277,9 @@ class StorageService {
   }
 
   async deleteFile(bucket, filename) {
-    const filesToDelete = [filename, `medium_${filename}`, `thumb_${filename}`];
+    const filesToDelete = bucket === 'designs'
+      ? [filename]
+      : [filename, `medium_${filename}`, `thumb_${filename}`];
     
     // 并行删除所有相关文件
     const deletePromises = filesToDelete.map(async (f) => {

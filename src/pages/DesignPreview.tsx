@@ -2,13 +2,23 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { designsAPI, ordersAPI, Order, Design } from '../api';
 import { buildImageUrl } from '../lib/utils';
+import { renderCanvasToHighResImage } from '../lib/canvasRenderer';
 import Layout from '../components/Layout';
+
+type PreviewPageItem = {
+  id: string;
+  name: string;
+  width: number;
+  height: number;
+  imageUrl: string;
+};
 
 const DesignPreview: React.FC = () => {
   const { orderId } = useParams<{ orderId: string }>();
   const navigate = useNavigate();
   const [order, setOrder] = useState<Order | null>(null);
   const [design, setDesign] = useState<Design | null>(null);
+  const [previewPages, setPreviewPages] = useState<PreviewPageItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -36,6 +46,8 @@ const DesignPreview: React.FC = () => {
           new Date(a.updated_at || a.created_at).getTime()
         );
         setDesign(sorted[0]);
+      } else {
+        setDesign(null);
       }
     } catch (err) {
       console.error('Failed to load preview data:', err);
@@ -44,6 +56,65 @@ const DesignPreview: React.FC = () => {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    let cancelled = false;
+    const buildPreviewPages = async () => {
+      if (!design) {
+        setPreviewPages([]);
+        return;
+      }
+      const fallbackWidth = Number.isFinite(design.width) && design.width > 0 ? design.width : 800;
+      const fallbackHeight = Number.isFinite(design.height) && design.height > 0 ? design.height : 600;
+      let nextPages: PreviewPageItem[] = [];
+      try {
+        const parsed = JSON.parse(design.canvas_data);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const generatedPages = await Promise.all(parsed.map(async (item: any, index: number) => {
+            const width = Number.isFinite(Number(item?.width)) && Number(item?.width) > 0 ? Number(item.width) : fallbackWidth;
+            const height = Number.isFinite(Number(item?.height)) && Number(item?.height) > 0 ? Number(item.height) : fallbackHeight;
+            const elements = typeof item?.elements === 'string'
+              ? item.elements
+              : (typeof item?.canvas_data === 'string' ? item.canvas_data : '');
+            const imageUrl = await renderCanvasToHighResImage(
+              elements || '{"version":"5.3.0","objects":[]}',
+              'white',
+              false,
+              { width, height }
+            );
+            return {
+              id: String(item?.id || `page-${index + 1}`),
+              name: String(item?.name || `页面 ${index + 1}`),
+              width,
+              height,
+              imageUrl
+            };
+          }));
+          nextPages = generatedPages;
+        }
+      } catch (e) {
+        console.warn('解析多页面预览失败，回退单图预览', e);
+      }
+
+      if (nextPages.length === 0 && design.preview_path) {
+        nextPages = [{
+          id: 'preview-single',
+          name: '页面 1',
+          width: fallbackWidth,
+          height: fallbackHeight,
+          imageUrl: buildImageUrl(design.preview_path)
+        }];
+      }
+
+      if (!cancelled) {
+        setPreviewPages(nextPages);
+      }
+    };
+    buildPreviewPages();
+    return () => {
+      cancelled = true;
+    };
+  }, [design]);
 
   if (loading) {
     return (
@@ -87,14 +158,25 @@ const DesignPreview: React.FC = () => {
           </div>
         </div>
 
-        <div className="p-8 bg-gray-50 flex justify-center min-h-[500px] items-center">
-          {design?.preview_path ? (
-            <div className="relative shadow-lg rounded-lg overflow-hidden bg-white">
-              <img
-                src={buildImageUrl(design.preview_path)}
-                alt="设计预览"
-                className="max-w-full max-h-[70vh] object-contain"
-              />
+        <div className="p-6 bg-gray-50 min-h-[500px]">
+          {previewPages.length > 0 ? (
+            <div className="max-h-[75vh] overflow-y-auto pr-2">
+              <div className="space-y-6">
+                {previewPages.map((page, index) => (
+                  <div key={page.id} className="bg-white rounded-lg shadow-sm border border-gray-100 p-4">
+                    <div className="text-sm font-medium text-gray-700 mb-3">{page.name || `页面 ${index + 1}`}</div>
+                    <div className="flex justify-center">
+                      <div className="relative shadow-lg rounded-lg overflow-hidden bg-white">
+                        <img
+                          src={page.imageUrl}
+                          alt={`${page.name || `页面 ${index + 1}`} 预览`}
+                          className="max-w-full max-h-[65vh] object-contain"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           ) : (
             <div className="text-center text-gray-400 py-20">

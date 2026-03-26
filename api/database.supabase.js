@@ -274,9 +274,11 @@ class SupabaseDatabase {
     
     // Parse SQL to determine table and operation
     const lowerSql = sql.toLowerCase().trim();
+    const queryTimeoutMs = Math.max(2000, Number(process.env.DB_QUERY_TIMEOUT_MS || 30000));
     
     try {
-      if (lowerSql.startsWith('select')) {
+      const execute = async () => {
+        if (lowerSql.startsWith('select')) {
         // Handle SELECT queries
         let tableName = '';
         let whereClause = '';
@@ -354,8 +356,15 @@ class SupabaseDatabase {
         
         // Apply ORDER BY (only for non-count queries)
         if (orderBy && !selectClause.toLowerCase().includes('count(*)')) {
-          const [column, direction] = orderBy.trim().split(/\s+/);
-          query = query.order(column, { ascending: direction?.toLowerCase() !== 'desc' });
+          const orderSegments = orderBy
+            .split(',')
+            .map((segment) => segment.trim())
+            .filter(Boolean);
+          orderSegments.forEach((segment) => {
+            const [column, direction] = segment.split(/\s+/);
+            if (!column) return;
+            query = query.order(column, { ascending: direction?.toLowerCase() !== 'desc' });
+          });
         }
         
         // Apply Pagination (LIMIT & OFFSET) (only for non-count queries)
@@ -396,7 +405,7 @@ class SupabaseDatabase {
         const { data, error } = await this.supabase
           .from(tableName)
           .insert([record])
-          .select()
+          .select('id')
           .single();
           
         if (error) throw error;
@@ -423,7 +432,7 @@ class SupabaseDatabase {
           }
         });
         
-        const { data, error } = await query.select();
+        const { data, error } = await query.select('id');
         if (error) throw error;
         return [{ id: data[0]?.id, changes: data.length }];
         
@@ -437,7 +446,7 @@ class SupabaseDatabase {
         const tableName = tableMatch[1];
         const conditions = this.parseWhereClause(whereMatch[1], params);
         
-        let query = this.supabase.from(tableName).delete().select();
+        let query = this.supabase.from(tableName).delete().select('id');
         conditions.forEach(condition => {
           if (condition.type === 'in') {
             query = query.in(condition.column, condition.values);
@@ -452,6 +461,26 @@ class SupabaseDatabase {
       }
       
       throw new Error(`不支持的SQL操作: ${sql}`);
+      };
+      const runWithTimeout = () => Promise.race([
+        execute(),
+        new Promise((_, reject) => {
+          setTimeout(() => reject(new Error(`数据库查询超时（>${queryTimeoutMs}ms）`)), queryTimeoutMs);
+        })
+      ]);
+      const shouldRetry = (err) => {
+        const message = err instanceof Error ? err.message : String(err || '');
+        return message.includes('fetch failed') || message.includes('超时');
+      };
+      try {
+        return await runWithTimeout();
+      } catch (error) {
+        if (!shouldRetry(error)) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        return await runWithTimeout();
+      }
     } catch (error) {
       console.error('数据库查询失败:', error);
       throw error;

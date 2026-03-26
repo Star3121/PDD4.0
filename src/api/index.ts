@@ -6,6 +6,21 @@ async function request<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const url = `${API_BASE_URL}${endpoint}`;
+  const requestTimeoutMs = Number(import.meta.env.VITE_API_TIMEOUT_MS || 45000);
+  const timeoutController = new AbortController();
+  let timeoutTriggered = false;
+  const onExternalAbort = () => timeoutController.abort();
+  if (options.signal) {
+    if (options.signal.aborted) {
+      timeoutController.abort();
+    } else {
+      options.signal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
+  const timeoutId = setTimeout(() => {
+    timeoutTriggered = true;
+    timeoutController.abort();
+  }, requestTimeoutMs);
   
   const config: RequestInit = {
     headers: {
@@ -14,6 +29,7 @@ async function request<T>(
     },
     cache: 'no-store',
     ...options,
+    signal: timeoutController.signal,
   };
 
   try {
@@ -29,8 +45,19 @@ async function request<T>(
     
     return await response.json();
   } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      if (timeoutTriggered) {
+        throw new Error(`请求超时（>${requestTimeoutMs}ms）`);
+      }
+      throw error;
+    }
     console.error('API请求错误:', error);
     throw error;
+  } finally {
+    clearTimeout(timeoutId);
+    if (options.signal) {
+      options.signal.removeEventListener('abort', onExternalAbort);
+    }
   }
 }
 
@@ -50,6 +77,57 @@ async function uploadFile(endpoint: string, file: File, data?: Record<string, an
   try {
     const response = await fetch(url, {
       method: 'POST',
+      body: formData,
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      const errorMessage = error.message || error.error || '上传失败';
+      const details = error.details ? ` (${error.details})` : '';
+      throw new Error(`${errorMessage}${details}`);
+    }
+    
+    return await response.json();
+  } catch (error) {
+    console.error('文件上传错误:', error);
+    throw error;
+  }
+}
+
+async function uploadFileByField<T>(endpoint: string, file: File, fieldName: string) {
+  const url = `${API_BASE_URL}${endpoint}`;
+  const formData = new FormData();
+  formData.append(fieldName, file);
+  const response = await fetch(url, {
+    method: 'POST',
+    body: formData,
+  });
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.message || error.error || '上传失败');
+  }
+  return response.json() as Promise<T>;
+}
+
+async function uploadFileWithMethod<T>(endpoint: string, method: 'POST' | 'PUT', file?: File, data?: Record<string, any>) {
+  const url = `${API_BASE_URL}${endpoint}`;
+  const formData = new FormData();
+
+  if (file) {
+    formData.append('image', file);
+  }
+
+  if (data) {
+    Object.keys(data).forEach(key => {
+      if (data[key] !== undefined) {
+        formData.append(key, data[key]);
+      }
+    });
+  }
+
+  try {
+    const response = await fetch(url, {
+      method,
       body: formData,
     });
     
@@ -105,6 +183,71 @@ async function uploadDesignWithPreview<T>(endpoint: string, method: 'POST' | 'PU
   }
 }
 
+const TEMPLATE_CACHE_VERSION_KEY = 'templateLibraryRefresh';
+const TEMPLATE_CACHE_BUMP_EVENT = 'template-library-cache-bump';
+
+const templateListCache = new Map<string, {
+  version: string;
+  data: PaginatedResponse<Template> | Template[];
+}>();
+let categoriesCache: Category[] | null = null;
+let categoriesCacheVersion = '';
+
+const getTemplateCacheVersion = () => {
+  if (typeof window === 'undefined') return 'server';
+  return window.localStorage.getItem(TEMPLATE_CACHE_VERSION_KEY) || '0';
+};
+
+const getTemplateListCacheKey = (params?: {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  category?: string;
+  sortBy?: string;
+  sortOrder?: string;
+  includeCanvasData?: boolean;
+}) => {
+  const normalized = {
+    page: params?.page ?? 1,
+    pageSize: params?.pageSize ?? 20,
+    search: params?.search?.trim() || '',
+    category: params?.category || '',
+    sortBy: params?.sortBy || '',
+    sortOrder: params?.sortOrder || '',
+    includeCanvasData: Boolean(params?.includeCanvasData),
+  };
+  return JSON.stringify(normalized);
+};
+
+const bumpTemplateCacheVersion = () => {
+  if (typeof window === 'undefined') {
+    templateListCache.clear();
+    categoriesCache = null;
+    categoriesCacheVersion = '';
+    return;
+  }
+  const nextVersion = Date.now().toString();
+  window.localStorage.setItem(TEMPLATE_CACHE_VERSION_KEY, nextVersion);
+  window.dispatchEvent(new CustomEvent(TEMPLATE_CACHE_BUMP_EVENT, { detail: nextVersion }));
+  templateListCache.clear();
+  categoriesCache = null;
+  categoriesCacheVersion = '';
+};
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (event) => {
+    if (event.key !== TEMPLATE_CACHE_VERSION_KEY) return;
+    templateListCache.clear();
+    categoriesCache = null;
+    categoriesCacheVersion = '';
+  });
+  window.addEventListener(TEMPLATE_CACHE_BUMP_EVENT, () => {
+    templateListCache.clear();
+    categoriesCache = null;
+    categoriesCacheVersion = '';
+  });
+}
+
 // 订单相关API
 export const ordersAPI = {
   getAll: (params?: {
@@ -112,6 +255,10 @@ export const ordersAPI = {
     pageSize?: number;
     search?: string;
     mark?: string;
+    productCategory?: string;
+    exportTimeFilter?: string;
+    exportStartDate?: string;
+    exportEndDate?: string;
     sortBy?: string;
     sortOrder?: string;
   }) => {
@@ -125,6 +272,24 @@ export const ordersAPI = {
     }
     const queryString = searchParams.toString();
     return request<PaginatedResponse<Order> | Order[]>(`/orders${queryString ? `?${queryString}` : ''}`);
+  },
+  getCategories: (params?: {
+    search?: string;
+    mark?: string;
+    exportTimeFilter?: string;
+    exportStartDate?: string;
+    exportEndDate?: string;
+  }) => {
+    const searchParams = new URLSearchParams();
+    if (params) {
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== '') {
+          searchParams.append(key, String(value));
+        }
+      });
+    }
+    const queryString = searchParams.toString();
+    return request<string[]>(`/orders/categories${queryString ? `?${queryString}` : ''}`);
   },
   getById: (id: number) => request<Order>(`/orders/${id}`),
   create: (data: CreateOrderData) => request<Order>('/orders', {
@@ -148,10 +313,20 @@ export const ordersAPI = {
       method: 'PATCH',
       body: JSON.stringify({ orderIds, exportStatus }),
     }),
-  getStats: (customStartDate?: string, customEndDate?: string) => {
+  getStats: (params?: {
+    customStartDate?: string;
+    customEndDate?: string;
+    search?: string;
+    productCategory?: string;
+  }) => {
     const searchParams = new URLSearchParams();
-    if (customStartDate) searchParams.append('customStartDate', customStartDate);
-    if (customEndDate) searchParams.append('customEndDate', customEndDate);
+    if (params) {
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== '') {
+          searchParams.append(key, String(value));
+        }
+      });
+    }
     const queryString = searchParams.toString();
     return request<OrderStats>(`/orders/stats${queryString ? `?${queryString}` : ''}`);
   },
@@ -166,7 +341,14 @@ export const templatesAPI = {
     category?: string;
     sortBy?: string;
     sortOrder?: string;
+    includeCanvasData?: boolean;
   }) => {
+    const currentVersion = getTemplateCacheVersion();
+    const cacheKey = getTemplateListCacheKey(params);
+    const cached = templateListCache.get(cacheKey);
+    if (cached && cached.version === currentVersion) {
+      return Promise.resolve(cached.data);
+    }
     const searchParams = new URLSearchParams();
     if (params) {
       Object.entries(params).forEach(([key, value]) => {
@@ -176,42 +358,115 @@ export const templatesAPI = {
       });
     }
     const queryString = searchParams.toString();
-    return request<PaginatedResponse<Template> | Template[]>(`/templates${queryString ? `?${queryString}` : ''}`);
+    return request<PaginatedResponse<Template> | Template[]>(`/templates${queryString ? `?${queryString}` : ''}`).then((response) => {
+      templateListCache.set(cacheKey, { version: currentVersion, data: response });
+      return response;
+    });
   },
   getById: (id: number) => request<Template>(`/templates/${id}`),
-  create: (file: File, data: CreateTemplateData) => uploadFile('/templates', file, data),
-  delete: (id: number) => request<void>(`/templates/${id}`, {
+  create: (file: File, data: CreateTemplateData) =>
+    uploadFile('/templates', file, data).then((response) => {
+      bumpTemplateCacheVersion();
+      return response;
+    }),
+  uploadTemp: (file: File) => uploadFile('/templates/temp', file),
+  createFromTemp: (templates: CreateTemplateFromTempData[]) =>
+    request<{ templates: Template[] }>('/templates/from-temp', {
+      method: 'POST',
+      body: JSON.stringify({ templates }),
+    }).then((response) => {
+      bumpTemplateCacheVersion();
+      return response;
+    }),
+  updateContent: (id: number, data: UpdateTemplateContentData, file?: File) =>
+    uploadFileWithMethod<Template>(`/templates/${id}/content`, 'PUT', file, data).then((response) => {
+      bumpTemplateCacheVersion();
+      return response;
+    }),
+  deleteTemp: (filename: string) => request<{ message: string }>(`/templates/temp/${encodeURIComponent(filename)}`, {
     method: 'DELETE',
   }),
-  batchDelete: (ids: number[]) => request<{ message: string; deletedCount: number }>('/templates', {
-    method: 'DELETE',
-    body: JSON.stringify({ ids }),
+  checkName: (name: string, excludeId?: number) => {
+    const searchParams = new URLSearchParams();
+    searchParams.append('name', name);
+    if (excludeId !== undefined) {
+      searchParams.append('excludeId', String(excludeId));
+    }
+    return request<{ exists: boolean; name: string }>(`/templates/check-name?${searchParams.toString()}`);
+  },
+  delete: (id: number) =>
+    request<void>(`/templates/${id}`, {
+      method: 'DELETE',
+    }).then((response) => {
+      bumpTemplateCacheVersion();
+      return response;
+    }),
+  batchDelete: (ids: number[]) =>
+    request<{ message: string; deletedCount: number }>('/templates', {
+      method: 'DELETE',
+      body: JSON.stringify({ ids }),
+    }).then((response) => {
+      bumpTemplateCacheVersion();
+      return response;
+    }),
+  incrementUsage: (id: number) => request<Template>(`/templates/${id}/usage`, {
+    method: 'PATCH',
   }),
-  update: (id: number, data: UpdateTemplateData) => request<Template>(`/templates/${id}`, {
-    method: 'PUT',
-    body: JSON.stringify(data),
-  }),
+  update: (id: number, data: UpdateTemplateData) =>
+    request<Template>(`/templates/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }).then((response) => {
+      bumpTemplateCacheVersion();
+      return response;
+    }),
 };
 
 // 分类相关API
 export const categoriesAPI = {
-  getAll: () => request<Category[]>('/categories'),
+  getAll: () => {
+    const currentVersion = getTemplateCacheVersion();
+    if (categoriesCache && categoriesCacheVersion === currentVersion) {
+      return Promise.resolve(categoriesCache);
+    }
+    return request<Category[]>('/categories').then((response) => {
+      categoriesCache = response;
+      categoriesCacheVersion = currentVersion;
+      return response;
+    });
+  },
   getById: (id: number) => request<Category>(`/categories/${id}`),
-  create: (data: CreateCategoryData) => request<Category>('/categories', {
-    method: 'POST',
-    body: JSON.stringify(data),
-  }),
-  update: (id: number, data: UpdateCategoryData) => request<Category>(`/categories/${id}`, {
-    method: 'PUT',
-    body: JSON.stringify(data),
-  }),
-  delete: (id: number) => request<void>(`/categories/${id}`, {
-    method: 'DELETE',
-  }),
-  reorder: (categories: { id: number; sort_order: number }[]) => request<Category[]>('/categories/reorder', {
-    method: 'PATCH',
-    body: JSON.stringify({ categories }),
-  }),
+  create: (data: CreateCategoryData) =>
+    request<Category>('/categories', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }).then((response) => {
+      bumpTemplateCacheVersion();
+      return response;
+    }),
+  update: (id: number, data: UpdateCategoryData) =>
+    request<Category>(`/categories/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }).then((response) => {
+      bumpTemplateCacheVersion();
+      return response;
+    }),
+  delete: (id: number) =>
+    request<void>(`/categories/${id}`, {
+      method: 'DELETE',
+    }).then((response) => {
+      bumpTemplateCacheVersion();
+      return response;
+    }),
+  reorder: (categories: { id: number; sort_order: number }[]) =>
+    request<Category[]>('/categories/reorder', {
+      method: 'PATCH',
+      body: JSON.stringify({ categories }),
+    }).then((response) => {
+      bumpTemplateCacheVersion();
+      return response;
+    }),
 };
 
 // 设计相关API
@@ -222,9 +477,10 @@ export const designsAPI = {
     method: 'POST',
     body: JSON.stringify(data),
   }),
-  update: (id: number, data: UpdateDesignData) => request<Design>(`/designs/${id}`, {
+  update: (id: number, data: UpdateDesignData, options?: RequestInit) => request<Design>(`/designs/${id}`, {
     method: 'PUT',
     body: JSON.stringify(data),
+    ...options,
   }),
   delete: (id: number) => request<void>(`/designs/${id}`, {
     method: 'DELETE',
@@ -237,6 +493,8 @@ export const designsAPI = {
 // 上传相关API
 export const uploadAPI = {
   uploadImage: (file: File) => uploadFile('/upload/image', file),
+  uploadFont: (file: File) => uploadFileByField<{ message: string; font: CustomFont }>('/upload/font', file, 'font'),
+  getFonts: () => request<CustomFont[]>('/upload/fonts'),
   exportOrder: (orderId: number) => {
     window.open(`${API_BASE_URL}/upload/export/${orderId}`);
   },
@@ -322,17 +580,63 @@ export interface Template {
   image_path: string;
   thumbnail_path?: string;
   category: string;
+  source?: string;
+  canvas_data?: string | null;
+  width?: number | null;
+  height?: number | null;
+  background_color?: string | null;
+  version?: number;
+  status?: string;
+  template_code?: string | null;
+  usage_count?: number;
+  pinned?: number;
   created_at: string;
 }
 
 export interface CreateTemplateData {
   name: string;
   category?: string;
+  canvas_data?: string | null;
+  width?: number | null;
+  height?: number | null;
+  background_color?: string;
+  source?: string;
+  status?: string;
+  template_code?: string;
 }
 
 export interface UpdateTemplateData {
   name?: string;
   category?: string;
+  pinned?: boolean;
+}
+
+export interface CreateTemplateFromTempData {
+  name: string;
+  category?: string;
+  tempFilename: string;
+  mimeType?: string;
+  canvas_data?: string | null;
+  width?: number | null;
+  height?: number | null;
+  background_color?: string;
+  source?: string;
+  status?: string;
+  template_code?: string;
+  version?: number;
+}
+
+export interface UpdateTemplateContentData {
+  name?: string;
+  category?: string;
+  canvas_data?: string | null;
+  width?: number | null;
+  height?: number | null;
+  background_color?: string;
+  source?: string;
+  status?: string;
+  template_code?: string;
+  version?: number;
 }
 
 export interface Category {
@@ -360,6 +664,18 @@ export interface UpdateCategoryData {
   sort_order?: number;
 }
 
+export interface CustomFont {
+  id: number;
+  font_family: string;
+  display_name: string;
+  original_filename: string;
+  file_url: string;
+  format: string;
+  size_bytes: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Design {
   id: number;
   order_id: number;
@@ -377,6 +693,7 @@ export interface CreateDesignData {
   order_id: number;
   name: string;
   canvas_data: string;
+  canvas_data_mode?: 'full' | 'patch';
   width?: number;
   height?: number;
   background_type?: string;
@@ -385,6 +702,7 @@ export interface CreateDesignData {
 export interface UpdateDesignData {
   name?: string;
   canvas_data?: string;
+  canvas_data_mode?: 'full' | 'patch';
   width?: number;
   height?: number;
   background_type?: string;

@@ -1,0 +1,41 @@
+[
+  {
+    "id": "179e75d0-b091-434b-b49e-5040be5c17ce",
+    "font_family": "AaMianHuatang",
+    "display_name": "AaMianHuatang",
+    "original_filename": "59115e3f-5f73-4e4b-8b64-b200a9c49845.ttf",
+    "file_name": "1774018171815-AaMianHuatang-1d55919d.woff2",
+    "file_url": "/api/files/fonts/1774018171815-AaMianHuatang-1d55919d.woff2",
+    "format": "woff2",
+    "size_bytes": 2251816,
+    "hash": "24abd0d9f51d786fe4fa41258c4366a116cffc5d81a0fe6548a9b612a45bcb0f",
+    "created_at": "2026-03-20T14:49:48.087Z",
+    "updated_at": "2026-03-20T14:49:48.087Z"
+  },
+  {
+    "id": "65e5a7ad-8325-4065-90d2-b6ff04d55471",
+    "font_family": "Balloon",
+    "display_name": "Balloon",
+    "original_filename": "Balloon.otf",
+    "file_name": "1774021905153-Balloon-7947d915.woff2",
+    "file_url": "/api/files/fonts/1774021905153-Balloon-7947d915.woff2",
+    "format": "woff2",
+    "size_bytes": 27680,
+    "hash": "b42d6b4de4d80353b3f027a88bd47b3ffc8a004eb7ed8e867eb474b1b32390e7",
+    "created_at": "2026-03-20T15:49:25.572Z",
+    "updated_at": "2026-03-20T15:51:46.016Z"
+  },
+  {
+    "id": "4a573c0d-a928-4a2b-8d6e-a621d4bd6db2",
+    "font_family": "Chlakh",
+    "display_name": "Chlakh",
+    "original_filename": "Chlakh Regular.ttf",
+    "file_name": "1774021875546-Chlakh-3b16b4c5.woff2",
+    "file_url": "/api/files/fonts/1774021875546-Chlakh-3b16b4c5.woff2",
+    "format": "woff2",
+    "size_bytes": 13188,
+    "hash": "1730d18bae6d6f77da885daa80949d5a5080d2e58665a8bd27fdd329eb05f72d",
+    "created_at": "2026-03-20T15:51:16.342Z",
+    "updated_at": "2026-03-20T15:51:16.342Z"
+  }
+]

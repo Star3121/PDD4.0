@@ -157,6 +157,35 @@ test_frame_interaction.js          # 浏览器测试脚本
 - **拖拽**：移动对象或调整大小
 - **键盘**：Ctrl+Z撤销，Ctrl+Y重做，Delete删除，Escape退出
 
+## 🖌️ 图片描边 API 文档
+
+### 数据结构
+#### ImageStrokeSettings
+- `style`：`regular | dashed | solid | none`
+- `color`：支持 `rgb()`、`hsl()`、`#hex` 等 CSS 颜色格式
+- `thickness`：`1 - 50`，支持 `0.5` 步进
+- `opacity`：`0 - 100`
+
+### CanvasEditorRef API
+#### updateImageStroke(image, settings, skipHistory?)
+用于基于非透明像素边缘检测生成描边，并在画布上实时渲染。
+
+参数：
+- `image`：目标 `fabric.Image`
+- `settings`：`ImageStrokeSettings`
+- `skipHistory`：是否跳过历史记录（拖拽实时预览场景传 `true`）
+
+### 使用示例
+```ts
+const image = canvasRef.current?.canvas?.getActiveObject() as fabric.Image;
+canvasRef.current?.updateImageStroke(image, {
+  style: 'dashed',
+  color: 'hsl(200, 80%, 50%)',
+  thickness: 8,
+  opacity: 85,
+}, false);
+```
+
 ## 🎉 项目总结
 
 双模式相框编辑系统是一个功能完整、性能优化、用户体验良好的创新功能。系统完全实现了产品需求文档中的所有要求：

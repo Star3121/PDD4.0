@@ -3,6 +3,9 @@ import { templatesAPI, categoriesAPI } from '../api';
 import { Template, PaginatedResponse, Category } from '../api';
 import Pagination from './Pagination';
 import { buildImageUrl, buildThumbnailUrl } from '../lib/utils';
+import { DEFAULT_CANVAS_PRESETS, CANVAS_SIZE_LIMITS, CanvasPreset } from '../lib/templateUtils';
+
+const CUSTOM_PRESET_STORAGE_KEY = 'templateCanvasPresets';
 
 interface TemplateLibraryProps {
   onTemplateSelect: (template: Template) => void;
@@ -27,6 +30,27 @@ const TemplateLibrary: React.FC<TemplateLibraryProps> = ({
   const [uploadName, setUploadName] = useState('');
   const [uploadCategory, setUploadCategory] = useState('default');
   const [uploading, setUploading] = useState(false);
+  const [designModalOpen, setDesignModalOpen] = useState(false);
+  const [designName, setDesignName] = useState('');
+  const [designCategory, setDesignCategory] = useState('default');
+  const [designWidth, setDesignWidth] = useState(DEFAULT_CANVAS_PRESETS[0]?.width || 3000);
+  const [designHeight, setDesignHeight] = useState(DEFAULT_CANVAS_PRESETS[0]?.height || 4000);
+  const [designBackgroundColor, setDesignBackgroundColor] = useState('#FFFFFF');
+  const [canvasPresets, setCanvasPresets] = useState<CanvasPreset[]>(() => {
+    if (typeof window === 'undefined') return DEFAULT_CANVAS_PRESETS;
+    try {
+      const saved = window.localStorage.getItem(CUSTOM_PRESET_STORAGE_KEY);
+      if (!saved) return DEFAULT_CANVAS_PRESETS;
+      const parsed = JSON.parse(saved) as CanvasPreset[];
+      return [...DEFAULT_CANVAS_PRESETS, ...parsed.map((preset) => ({ ...preset, isCustom: true }))];
+    } catch {
+      return DEFAULT_CANVAS_PRESETS;
+    }
+  });
+  const [selectedPresetId, setSelectedPresetId] = useState(DEFAULT_CANVAS_PRESETS[0]?.id || '');
+  const [newPresetName, setNewPresetName] = useState('');
+  const [newPresetWidth, setNewPresetWidth] = useState('');
+  const [newPresetHeight, setNewPresetHeight] = useState('');
   
   // 分类相关状态
   const [categories, setCategories] = useState<Category[]>([]);
@@ -41,9 +65,27 @@ const TemplateLibrary: React.FC<TemplateLibraryProps> = ({
   const [totalPages, setTotalPages] = useState(1);
 
   useEffect(() => {
-    fetchTemplates();
     fetchCategories();
   }, []);
+
+  useEffect(() => {
+    if (categories.length === 0) return;
+    if (!categories.some((category) => category.name === designCategory)) {
+      setDesignCategory(categories[0].name);
+    }
+  }, [categories, designCategory]);
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === 'templateLibraryRefresh') {
+        fetchTemplates();
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, [currentPage, pageSize, activeSearchQuery, selectedCategory]);
 
   // 监听分页参数变化
   useEffect(() => {
@@ -121,6 +163,125 @@ const TemplateLibrary: React.FC<TemplateLibraryProps> = ({
     } finally {
       setUploading(false);
     }
+  };
+
+  const persistCustomPresets = (presets: CanvasPreset[]) => {
+    if (typeof window === 'undefined') return;
+    const customPresets = presets.filter((preset) => preset.isCustom);
+    window.localStorage.setItem(CUSTOM_PRESET_STORAGE_KEY, JSON.stringify(customPresets));
+  };
+
+  const handleOpenDesignModal = () => {
+    const defaultPreset = DEFAULT_CANVAS_PRESETS[0];
+    if (defaultPreset) {
+      setDesignWidth(defaultPreset.width);
+      setDesignHeight(defaultPreset.height);
+      setSelectedPresetId(defaultPreset.id);
+    } else {
+      setSelectedPresetId('');
+      setDesignWidth(3000);
+      setDesignHeight(4000);
+    }
+    setDesignBackgroundColor('#FFFFFF');
+    setDesignName('');
+    setDesignCategory(categories[0]?.name || 'default');
+    setDesignModalOpen(true);
+  };
+
+  const handlePresetSelect = (preset: CanvasPreset) => {
+    setSelectedPresetId(preset.id);
+    setDesignWidth(preset.width);
+    setDesignHeight(preset.height);
+  };
+
+  const handleAddPreset = () => {
+    const name = newPresetName.trim();
+    const width = Number(newPresetWidth);
+    const height = Number(newPresetHeight);
+    if (!name) {
+      alert('请输入尺寸方案名称');
+      return;
+    }
+    if (!Number.isFinite(width) || !Number.isFinite(height)) {
+      alert('请输入有效的宽度和高度');
+      return;
+    }
+    if (width < CANVAS_SIZE_LIMITS.min || width > CANVAS_SIZE_LIMITS.max || height < CANVAS_SIZE_LIMITS.min || height > CANVAS_SIZE_LIMITS.max) {
+      alert(`尺寸范围为 ${CANVAS_SIZE_LIMITS.min}px - ${CANVAS_SIZE_LIMITS.max}px`);
+      return;
+    }
+    const newPreset: CanvasPreset = {
+      id: `custom-${Date.now()}`,
+      name,
+      width,
+      height,
+      isCustom: true
+    };
+    const nextPresets = [...canvasPresets, newPreset];
+    setCanvasPresets(nextPresets);
+    persistCustomPresets(nextPresets);
+    setNewPresetName('');
+    setNewPresetWidth('');
+    setNewPresetHeight('');
+  };
+
+  const handleDeletePreset = (presetId: string) => {
+    const nextPresets = canvasPresets.filter((preset) => preset.id !== presetId);
+    setCanvasPresets(nextPresets);
+    persistCustomPresets(nextPresets);
+    if (selectedPresetId === presetId && DEFAULT_CANVAS_PRESETS[0]) {
+      handlePresetSelect(DEFAULT_CANVAS_PRESETS[0]);
+    } else if (selectedPresetId === presetId) {
+      setSelectedPresetId('');
+    }
+  };
+
+  const handleStartDesign = async () => {
+    const name = designName.trim();
+    if (!name) {
+      alert('请输入模板名称');
+      return;
+    }
+    if (name.length > 30) {
+      alert('模板名称不能超过30个字符');
+      return;
+    }
+    const width = Number(designWidth);
+    const height = Number(designHeight);
+    if (!Number.isFinite(width) || !Number.isFinite(height)) {
+      alert('请输入有效的宽度和高度');
+      return;
+    }
+    if (width < CANVAS_SIZE_LIMITS.min || width > CANVAS_SIZE_LIMITS.max || height < CANVAS_SIZE_LIMITS.min || height > CANVAS_SIZE_LIMITS.max) {
+      alert(`尺寸范围为 ${CANVAS_SIZE_LIMITS.min}px - ${CANVAS_SIZE_LIMITS.max}px`);
+      return;
+    }
+    try {
+      const result = await templatesAPI.checkName(name);
+      if (result.exists) {
+        alert('模板名称已存在');
+        return;
+      }
+    } catch (error) {
+      console.error('模板名称校验失败:', error);
+      alert('模板名称校验失败，请稍后重试');
+      return;
+    }
+    const draftId = `draft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const params = new URLSearchParams({
+      name,
+      category: designCategory,
+      width: String(width),
+      height: String(height),
+      backgroundColor: designBackgroundColor,
+      draftId
+    });
+    window.open(`/template-design?${params.toString()}`, '_blank');
+    setDesignModalOpen(false);
+  };
+
+  const handleEditTemplateDesign = (template: Template) => {
+    window.open(`/template-design?templateId=${template.id}`, '_blank');
   };
 
   const handleSelectTemplate = (templateId: number) => {
@@ -212,6 +373,17 @@ const TemplateLibrary: React.FC<TemplateLibraryProps> = ({
     } catch (error) {
       console.error('删除模板失败:', error);
       alert('删除模板失败，请稍后重试');
+    }
+  };
+
+  const handleTogglePin = async (template: Template) => {
+    const nextPinned = template.pinned ? false : true;
+    try {
+      await templatesAPI.update(template.id, { pinned: nextPinned });
+      fetchTemplates();
+    } catch (error) {
+      console.error('更新模板置顶状态失败:', error);
+      alert('更新模板置顶状态失败，请稍后重试');
     }
   };
 
@@ -390,6 +562,12 @@ const TemplateLibrary: React.FC<TemplateLibraryProps> = ({
               搜索
             </button>
           </div>
+          <button
+            onClick={handleOpenDesignModal}
+            className="bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded text-sm flex items-center gap-1 shadow-sm"
+          >
+            设计模板
+          </button>
           {filteredTemplates.length > 0 && (
             <button
               onClick={handleSelectAll}
@@ -500,11 +678,11 @@ const TemplateLibrary: React.FC<TemplateLibraryProps> = ({
           <p>暂无模板</p>
         </div>
       ) : (
-        <div className="grid grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-3 max-h-96 overflow-y-auto">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
           {filteredTemplates.map(template => (
             <div
               key={template.id}
-              className={`relative group border rounded-lg overflow-hidden hover:shadow-md transition-all aspect-[3/4] ${
+              className={`relative group border rounded-xl overflow-hidden hover:shadow-md transition-all aspect-[4/5] bg-white ${
                 selectedTemplates.has(template.id) 
                   ? 'border-blue-500 bg-blue-50' 
                   : 'border-gray-200'
@@ -521,16 +699,30 @@ const TemplateLibrary: React.FC<TemplateLibraryProps> = ({
                 />
               </div>
               
-              <img
-                src={buildThumbnailUrl(template.image_path, 'thumb')}
-                onError={(e) => {
-                  e.currentTarget.src = buildImageUrl(template.image_path);
-                }}
-                alt={template.name}
-                className="w-full h-2/3 object-cover cursor-pointer"
+              <button
+                type="button"
+                className="w-full h-[72%] bg-gray-50 p-2 cursor-pointer"
                 onClick={() => onTemplateSelect(template)}
-              />
-              <div className="p-2 h-1/3 flex flex-col justify-between">
+              >
+                <img
+                  src={buildThumbnailUrl(template.image_path, 'thumb')}
+                  onError={(e) => {
+                    e.currentTarget.src = buildImageUrl(template.image_path);
+                  }}
+                  alt={template.name}
+                  className="w-full h-full object-contain"
+                />
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleEditTemplateDesign(template);
+                }}
+                className="absolute inset-x-3 top-16 bg-white/90 hover:bg-white text-gray-800 text-xs font-medium px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity shadow"
+              >
+                编辑设计
+              </button>
+              <div className="p-2 pt-[0.275rem]">
                 {editingTemplateId === template.id ? (
                   <div className="space-y-1">
                     {editingField === 'name' && (
@@ -577,7 +769,7 @@ const TemplateLibrary: React.FC<TemplateLibraryProps> = ({
                     )}
                   </div>
                 ) : (
-                  <div className="flex flex-col h-full justify-between">
+                  <div className="flex flex-col gap-1">
                     <p 
                       className="text-sm font-medium text-gray-900 truncate cursor-pointer hover:text-blue-600 hover:bg-gray-50 rounded px-1 -mx-1 transition-colors" 
                       title={template.name}
@@ -595,17 +787,32 @@ const TemplateLibrary: React.FC<TemplateLibraryProps> = ({
                   </div>
                 )}
               </div>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  deleteTemplate(template.id);
-                }}
-                className="absolute top-1 right-1 bg-red-500 hover:bg-red-600 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
-              >
-                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
+              <div className="absolute top-1 right-1 flex items-center gap-1">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleTogglePin(template);
+                  }}
+                  className={`bg-white/90 hover:bg-white text-gray-700 rounded-full p-1 transition-opacity ${template.pinned ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+                  title={template.pinned ? '取消置顶' : '置顶'}
+                >
+                  <svg className={`w-3 h-3 ${template.pinned ? 'text-yellow-500' : 'text-gray-500'}`} fill="currentColor" viewBox="0 0 20 20">
+                    <path d="M10 2.5l2.472 5.007 5.528.804-4 3.9.944 5.501L10 15.51l-4.944 2.601.944-5.501-4-3.9 5.528-.804L10 2.5z" />
+                  </svg>
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteTemplate(template.id);
+                  }}
+                  className="bg-red-500 hover:bg-red-600 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                  title="删除模板"
+                >
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
             </div>
           ))}
         </div>
@@ -621,6 +828,8 @@ const TemplateLibrary: React.FC<TemplateLibraryProps> = ({
             total={total}
             onPageChange={handlePageChange}
             onPageSizeChange={handlePageSizeChange}
+            pageSizeOptions={[20]}
+            showPageSizeSelector={false}
           />
         </div>
       )}
@@ -687,6 +896,171 @@ const TemplateLibrary: React.FC<TemplateLibraryProps> = ({
                 disabled={uploading}
               >
                 {uploading ? '上传中...' : '上传'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {designModalOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-2xl mx-4">
+            <h3 className="text-lg font-semibold mb-4">初始化画布</h3>
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">模板名称</label>
+                  <input
+                    type="text"
+                    value={designName}
+                    onChange={(e) => setDesignName(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="请输入模板名称"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">分类</label>
+                  <select
+                    value={designCategory}
+                    onChange={(e) => setDesignCategory(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    {categories.map(category => (
+                      <option key={category.id} value={category.name}>
+                        {category.display_name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">快捷尺寸方案</label>
+                <div className="flex flex-wrap gap-2">
+                  {canvasPresets.map((preset) => (
+                    <div key={preset.id} className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handlePresetSelect(preset)}
+                        className={`px-3 py-1 rounded text-sm border ${
+                          selectedPresetId === preset.id
+                            ? 'bg-blue-500 text-white border-blue-500'
+                            : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-gray-200'
+                        }`}
+                      >
+                        {preset.name} {preset.width}×{preset.height}
+                      </button>
+                      {preset.isCustom && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeletePreset(preset.id)}
+                          className="text-gray-400 hover:text-red-500 px-1"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">宽度 (px)</label>
+                  <input
+                    type="number"
+                    min={CANVAS_SIZE_LIMITS.min}
+                    max={CANVAS_SIZE_LIMITS.max}
+                    value={designWidth}
+                    onChange={(e) => setDesignWidth(Number(e.target.value))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">高度 (px)</label>
+                  <input
+                    type="number"
+                    min={CANVAS_SIZE_LIMITS.min}
+                    max={CANVAS_SIZE_LIMITS.max}
+                    value={designHeight}
+                    onChange={(e) => setDesignHeight(Number(e.target.value))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-4 gap-3 items-end">
+                <div className="col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">新增方案名称</label>
+                  <input
+                    type="text"
+                    value={newPresetName}
+                    onChange={(e) => setNewPresetName(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">宽度</label>
+                  <input
+                    type="number"
+                    min={CANVAS_SIZE_LIMITS.min}
+                    max={CANVAS_SIZE_LIMITS.max}
+                    value={newPresetWidth}
+                    onChange={(e) => setNewPresetWidth(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">高度</label>
+                  <input
+                    type="number"
+                    min={CANVAS_SIZE_LIMITS.min}
+                    max={CANVAS_SIZE_LIMITS.max}
+                    value={newPresetHeight}
+                    onChange={(e) => setNewPresetHeight(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div className="col-span-4 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={handleAddPreset}
+                    className="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md text-sm"
+                  >
+                    新增尺寸方案
+                  </button>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">背景色</label>
+                  <input
+                    type="text"
+                    value={designBackgroundColor}
+                    onChange={(e) => setDesignBackgroundColor(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div className="flex items-end">
+                  <input
+                    type="color"
+                    value={designBackgroundColor}
+                    onChange={(e) => setDesignBackgroundColor(e.target.value)}
+                    className="h-10 w-12 cursor-pointer border border-gray-300 rounded"
+                  />
+                </div>
+              </div>
+              <p className="text-xs text-gray-500">尺寸范围：{CANVAS_SIZE_LIMITS.min}px - {CANVAS_SIZE_LIMITS.max}px</p>
+            </div>
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => setDesignModalOpen(false)}
+                className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleStartDesign}
+                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              >
+                开始设计
               </button>
             </div>
           </div>

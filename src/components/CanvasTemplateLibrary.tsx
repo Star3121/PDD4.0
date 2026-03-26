@@ -19,16 +19,20 @@ const CanvasTemplateLibrary: React.FC<CanvasTemplateLibraryProps> = ({
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isMoreModalOpen, setIsMoreModalOpen] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
 
   const handleSearch = () => {
     setActiveSearchQuery(searchQuery);
+    setCurrentPage(1);
   };
 
-  const { templates, categories, loading } = useTemplates({
-    page: 1,
-    pageSize: 7,
+  const { templates, categories, loading, total, totalPages } = useTemplates({
+    page: currentPage,
+    pageSize,
     search: activeSearchQuery,
-    category: selectedCategory
+    category: selectedCategory,
+    includeCanvasData: true
   });
 
   const getCategoryDisplayName = (categoryName: string) => {
@@ -39,6 +43,7 @@ const CanvasTemplateLibrary: React.FC<CanvasTemplateLibraryProps> = ({
 
   const handleCategoryChange = (category: string) => {
     setSelectedCategory(category);
+    setCurrentPage(1);
   };
 
   if (loading) {
@@ -52,7 +57,7 @@ const CanvasTemplateLibrary: React.FC<CanvasTemplateLibraryProps> = ({
   }
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 p-4">
+    <div className="bg-white rounded-lg border border-gray-200 p-4 flex flex-col h-full">
       {/* 标题和打开完整库按钮 */}
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-lg font-semibold text-gray-900">模板库</h3>
@@ -140,7 +145,7 @@ const CanvasTemplateLibrary: React.FC<CanvasTemplateLibraryProps> = ({
 
       {/* 模板网格 */}
       {templates.length === 0 ? (
-        <div className="text-center py-8 text-gray-500">
+        <div className="text-center py-8 text-gray-500 flex-1">
           <svg className="mx-auto h-12 w-12 text-gray-400 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             {activeSearchQuery ? (
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
@@ -168,66 +173,101 @@ const CanvasTemplateLibrary: React.FC<CanvasTemplateLibraryProps> = ({
           )}
         </div>
       ) : (
-        <div className={`relative grid grid-cols-4 gap-3 max-h-80 overflow-y-auto ${loading ? 'opacity-60 pointer-events-none' : ''}`}>
-          {templates.map(template => (
-            <div
-              key={template.id}
-              onClick={() => onTemplateSelect(template)}
-              className="group relative bg-white border border-gray-200 rounded-lg overflow-hidden hover:border-blue-300 hover:shadow-md transition-all duration-200 cursor-pointer"
-            >
-              {/* 模板图片 */}
-              <div className="aspect-square bg-gray-50 overflow-hidden">
-                <img
-                  src={buildThumbnailUrl(template.image_path, 'thumb')}
-                  alt={template.name}
-                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
-                  loading="lazy"
-                  onError={(e) => {
-                    e.currentTarget.src = buildImageUrl(template.image_path);
-                  }}
-                />
-              </div>
-              
-              {/* 模板信息 */}
-              <div className="p-2">
-                <h4 className="text-xs font-medium text-gray-900 truncate" title={template.name}>
-                  {template.name}
-                </h4>
-              </div>
+        <div className={`relative flex-1 min-h-0 overflow-y-auto pr-1 ${loading ? 'opacity-60 pointer-events-none' : ''}`}>
+          <div className="grid grid-cols-2 gap-3">
+            {templates.map(template => (
+              <div
+                key={template.id}
+                onClick={() => onTemplateSelect(template)}
+                className="group relative bg-white border border-gray-200 rounded-lg overflow-hidden hover:border-blue-300 hover:shadow-md transition-all duration-200 cursor-pointer"
+              >
+                <div className="aspect-square bg-gray-50 overflow-hidden">
+                  <img
+                    src={buildThumbnailUrl(template.image_path, 'thumb')}
+                    alt={template.name}
+                    className="w-full h-full object-contain bg-gray-50 transition-transform duration-200"
+                    loading="lazy"
+                    onError={(e) => {
+                      e.currentTarget.src = buildImageUrl(template.image_path);
+                    }}
+                  />
+                </div>
+                
+                <div className="p-2">
+                  <h4 className="text-xs font-medium text-gray-900 truncate" title={template.name}>
+                    {template.name}
+                  </h4>
+                  <p className="text-[11px] text-gray-500 truncate" title={getCategoryDisplayName(template.category)}>
+                    {getCategoryDisplayName(template.category)}
+                  </p>
+                </div>
 
-              {/* 悬停效果 */}
-              <div className="absolute inset-0 bg-blue-500 bg-opacity-0 group-hover:bg-opacity-10 transition-all duration-200 flex items-center justify-center">
-                <div className="opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-                  <div className="bg-white rounded-full p-2 shadow-lg">
-                    <svg className="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                    </svg>
+                <div className="absolute inset-0 bg-blue-500 bg-opacity-0 group-hover:bg-opacity-10 transition-all duration-200 flex items-center justify-center">
+                  <div className="opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                    <div className="bg-white rounded-full p-2 shadow-lg">
+                      <svg className="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                      </svg>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
-          ))}
-          
-          {/* "更多"按钮 */}
-          <div
-            onClick={() => setIsMoreModalOpen(true)}
-            className="group relative bg-white border border-gray-200 rounded-lg overflow-hidden hover:border-blue-300 hover:shadow-md transition-all duration-200 cursor-pointer flex items-center justify-center"
-          >
-            <div className="aspect-square flex flex-col items-center justify-center p-4">
-              <svg className="w-8 h-8 text-gray-400 group-hover:text-blue-500 transition-colors duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-              </svg>
-              <span className="text-xs text-gray-500 group-hover:text-blue-500 transition-colors duration-200 mt-2">更多</span>
-            </div>
+            ))}
           </div>
         </div>
       )}
 
-      {/* 底部提示 */}
-      <div className="mt-4 pt-3 border-t border-gray-100">
-        <p className="text-xs text-gray-500 text-center">
-          💡 点击模板即可应用到画布
-        </p>
+      <div className="mt-3 flex items-center justify-end gap-2">
+        <div className="flex items-center gap-2">
+          <select
+            value={pageSize}
+            onChange={(e) => {
+              setPageSize(Number(e.target.value));
+              setCurrentPage(1);
+            }}
+            className="rounded-md border border-gray-300 bg-white px-2 py-1 text-xs focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          >
+            {[10, 20, 50].map((size) => (
+              <option key={size} value={size}>
+                {size} / 页
+              </option>
+            ))}
+          </select>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+              disabled={currentPage <= 1}
+              className="p-1.5 text-gray-600 border border-gray-300 rounded-md disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-100"
+              title="上一页"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
+            <span className="text-xs text-gray-500">
+              {currentPage}/{totalPages}
+            </span>
+            <button
+              onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
+              disabled={currentPage >= totalPages}
+              className="p-1.5 text-gray-600 border border-gray-300 rounded-md disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-100"
+              title="下一页"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+          </div>
+          <button
+            onClick={() => setIsMoreModalOpen(true)}
+            className="p-1.5 text-gray-600 border border-gray-300 rounded-md hover:bg-gray-100"
+            title="更多"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01" />
+            </svg>
+          </button>
+        </div>
       </div>
 
       {/* 模板选择弹窗 */}

@@ -54,7 +54,18 @@ export class Database {
         name TEXT NOT NULL,
         image_path TEXT NOT NULL,
         category TEXT DEFAULT 'general',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        canvas_data TEXT,
+        width INTEGER,
+        height INTEGER,
+        background_color TEXT,
+        source TEXT,
+        status TEXT,
+        template_code TEXT,
+        version INTEGER DEFAULT 1,
+        usage_count INTEGER DEFAULT 0,
+        pinned INTEGER DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `;
 
@@ -87,6 +98,21 @@ export class Database {
       )
     `;
 
+    const createCustomFontsTable = `
+      CREATE TABLE IF NOT EXISTS custom_fonts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        font_family TEXT UNIQUE NOT NULL,
+        display_name TEXT NOT NULL,
+        original_filename TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        file_url TEXT NOT NULL,
+        format TEXT NOT NULL DEFAULT 'woff2',
+        size_bytes INTEGER DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `;
+
     this.db.serialize(() => {
       this.db.run(createOrdersTable, (err) => {
         if (err) console.error('创建orders表失败:', err);
@@ -99,7 +125,10 @@ export class Database {
       
       this.db.run(createTemplatesTable, (err) => {
         if (err) console.error('创建templates表失败:', err);
-        else console.log('templates表创建成功');
+        else {
+          console.log('templates表创建成功');
+          this.migrateTemplatesTable();
+        }
       });
       
       this.db.run(createDesignsTable, (err) => {
@@ -116,6 +145,50 @@ export class Database {
         else {
           console.log('categories表创建成功');
           this.initDefaultCategories();
+        }
+      });
+
+      this.db.run(createCustomFontsTable, (err) => {
+        if (err) console.error('创建custom_fonts表失败:', err);
+        else {
+          console.log('custom_fonts表创建成功');
+          this.migrateCustomFontsTable();
+        }
+      });
+    });
+  }
+
+  migrateCustomFontsTable() {
+    this.db.all("PRAGMA table_info(custom_fonts)", (err, columns) => {
+      if (err) {
+        console.error('检查custom_fonts表结构失败:', err);
+        return;
+      }
+      const existingColumns = columns.map(col => col.name);
+      const newColumns = [
+        { name: 'font_family', type: 'TEXT', default: '' },
+        { name: 'display_name', type: 'TEXT', default: '' },
+        { name: 'original_filename', type: 'TEXT', default: '' },
+        { name: 'file_name', type: 'TEXT', default: '' },
+        { name: 'file_url', type: 'TEXT', default: '' },
+        { name: 'format', type: 'TEXT', default: 'woff2' },
+        { name: 'size_bytes', type: 'INTEGER', default: '0' },
+        { name: 'created_at', type: 'TEXT', default: '' },
+        { name: 'updated_at', type: 'TEXT', default: '' }
+      ];
+      newColumns.forEach((column) => {
+        if (!existingColumns.includes(column.name)) {
+          let defaultClause = '';
+          if (column.default !== null) {
+            defaultClause = column.default === 'CURRENT_TIMESTAMP'
+              ? ' DEFAULT CURRENT_TIMESTAMP'
+              : ` DEFAULT '${column.default}'`;
+          }
+          this.db.run(`ALTER TABLE custom_fonts ADD COLUMN ${column.name} ${column.type}${defaultClause}`, (addErr) => {
+            if (addErr) {
+              console.error(`添加custom_fonts.${column.name}字段失败:`, addErr);
+            }
+          });
         }
       });
     });
@@ -179,6 +252,46 @@ export class Database {
       } else {
         console.log('background_type字段已存在');
       }
+    });
+  }
+
+  migrateTemplatesTable() {
+    this.db.all("PRAGMA table_info(templates)", (err, columns) => {
+      if (err) {
+        console.error('检查templates表结构失败:', err);
+        return;
+      }
+
+      const existingColumns = columns.map(col => col.name);
+      const newColumns = [
+        { name: 'canvas_data', type: 'TEXT', default: null },
+        { name: 'width', type: 'INTEGER', default: null },
+        { name: 'height', type: 'INTEGER', default: null },
+        { name: 'background_color', type: 'TEXT', default: null },
+        { name: 'source', type: 'TEXT', default: null },
+        { name: 'status', type: 'TEXT', default: null },
+        { name: 'template_code', type: 'TEXT', default: null },
+        { name: 'version', type: 'INTEGER', default: '1' },
+        { name: 'usage_count', type: 'INTEGER', default: '0' },
+        { name: 'pinned', type: 'INTEGER', default: '0' },
+        { name: 'updated_at', type: 'DATETIME', default: null }
+      ];
+
+      newColumns.forEach(column => {
+        if (!existingColumns.includes(column.name)) {
+          let defaultClause = '';
+          if (column.default !== null) {
+            defaultClause = column.default === 'CURRENT_TIMESTAMP'
+              ? ' DEFAULT CURRENT_TIMESTAMP'
+              : ` DEFAULT '${column.default}'`;
+          }
+          this.db.run(`ALTER TABLE templates ADD COLUMN ${column.name} ${column.type}${defaultClause}`, (err) => {
+            if (err) {
+              console.error(`添加${column.name}字段失败:`, err);
+            }
+          });
+        }
+      });
     });
   }
 

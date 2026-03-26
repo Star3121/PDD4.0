@@ -8,6 +8,7 @@ interface UseTemplatesParams {
   search?: string;
   category?: string;
   enabled?: boolean;
+  includeCanvasData?: boolean;
 }
 
 interface UseTemplatesResult {
@@ -24,7 +25,8 @@ export function useTemplates({
   pageSize = 20, 
   search = '', 
   category = 'all',
-  enabled = true 
+  enabled = true,
+  includeCanvasData = false
 }: UseTemplatesParams = {}): UseTemplatesResult {
   const [templates, setTemplates] = useState<Template[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -57,6 +59,7 @@ export function useTemplates({
         pageSize,
         search: search?.trim(),
         category: category === 'all' ? undefined : category,
+        includeCanvasData,
       };
       
       const response = await templatesAPI.getAll(params);
@@ -80,7 +83,7 @@ export function useTemplates({
 
   useEffect(() => {
     fetchTemplates();
-  }, [page, pageSize, search, category, enabled]);
+  }, [page, pageSize, search, category, enabled, includeCanvasData]);
 
   return {
     templates,

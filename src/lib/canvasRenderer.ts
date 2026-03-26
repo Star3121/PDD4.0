@@ -1,16 +1,500 @@
 import { fabric } from 'fabric';
+import {
+  buildMarchingSquaresSegments,
+  buildOrderedLoopsFromSegments,
+  computeLoopLength,
+  normalizeDashPattern,
+  selectOuterLoop,
+} from './outlineTracing';
+import { applyImageCropAndScaleFromRatios, deserializeCanvasData, prepareCanvasDataForRender } from './utils';
 
 // 画布配置常量（与CanvasEditor保持一致）
 const CANVAS_CONFIG = {
   PHYSICAL_WIDTH_CM: 75,
   PHYSICAL_HEIGHT_CM: 100,
   ASPECT_RATIO: 75 / 100,
-  BASE_DISPLAY_WIDTH_PX: 1062,
-  BASE_DISPLAY_HEIGHT_PX: 1418,
-  PRINT_WIDTH_PX: 2953,
-  PRINT_HEIGHT_PX: 3937,
+  BASE_DISPLAY_WIDTH_PX: 3000,
+  BASE_DISPLAY_HEIGHT_PX: 4000,
+  PRINT_WIDTH_PX: 3000,
+  PRINT_HEIGHT_PX: 4000,
   DISPLAY_DPI: 72,
   PRINT_DPI: 300,
+};
+
+type ImageStrokeStyle = 'regular' | 'dashed' | 'solid' | 'double-regular' | 'none';
+
+interface ImageStrokeLayerSettings {
+  color: string;
+  thickness: number;
+  opacity: number;
+}
+
+interface ImageStrokeSettings {
+  style: ImageStrokeStyle;
+  color: string;
+  thickness: number;
+  opacity: number;
+  innerLayer: ImageStrokeLayerSettings;
+  outerLayer: ImageStrokeLayerSettings;
+}
+
+const DEFAULT_IMAGE_STROKE_SETTINGS: ImageStrokeSettings = {
+  style: 'none',
+  color: '#000000',
+  thickness: 2,
+  opacity: 100,
+  innerLayer: {
+    color: '#000000',
+    thickness: 2,
+    opacity: 100,
+  },
+  outerLayer: {
+    color: '#000000',
+    thickness: 2,
+    opacity: 100,
+  },
+};
+const STROKE_INNER_OVERLAP_PX = 3;
+
+const clampValue = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
+const normalizeImageStrokeSettings = (raw?: Partial<ImageStrokeSettings> | null): ImageStrokeSettings => {
+  const source = raw || {};
+  const style = source.style || DEFAULT_IMAGE_STROKE_SETTINGS.style;
+  const color = typeof source.color === 'string' ? source.color : DEFAULT_IMAGE_STROKE_SETTINGS.color;
+  const thickness = clampValue(Number(source.thickness ?? DEFAULT_IMAGE_STROKE_SETTINGS.thickness), 1, 50);
+  const opacity = clampValue(Number(source.opacity ?? DEFAULT_IMAGE_STROKE_SETTINGS.opacity), 0, 100);
+  const normalizeLayer = (
+    rawLayer: Partial<ImageStrokeLayerSettings> | null | undefined,
+    fallback: ImageStrokeLayerSettings
+  ): ImageStrokeLayerSettings => {
+    const layerSource = rawLayer || {};
+    return {
+      color: typeof layerSource.color === 'string' ? layerSource.color : fallback.color,
+      thickness: clampValue(Number(layerSource.thickness ?? fallback.thickness), 1, 50),
+      opacity: clampValue(Number(layerSource.opacity ?? fallback.opacity), 0, 100),
+    };
+  };
+  return {
+    style: style === 'regular' || style === 'dashed' || style === 'solid' || style === 'double-regular' || style === 'none'
+      ? style
+      : DEFAULT_IMAGE_STROKE_SETTINGS.style,
+    color,
+    thickness,
+    opacity,
+    innerLayer: normalizeLayer(source.innerLayer, {
+      color,
+      thickness,
+      opacity,
+    }),
+    outerLayer: normalizeLayer(source.outerLayer, DEFAULT_IMAGE_STROKE_SETTINGS.outerLayer),
+  };
+};
+
+const getImageSourceData = (image: fabric.Image) => {
+  const element = image.getElement() as HTMLImageElement | HTMLCanvasElement | null;
+  if (!element) return null;
+  const width = image.width || (element as HTMLImageElement).naturalWidth || (element as HTMLCanvasElement).width;
+  const height = image.height || (element as HTMLImageElement).naturalHeight || (element as HTMLCanvasElement).height;
+  if (!width || !height) return null;
+  return { element, width, height };
+};
+
+const buildAlphaMaskCanvas = (image: fabric.Image, padding: number, threshold: number) => {
+  const sourceData = getImageSourceData(image);
+  if (!sourceData) return null;
+  const { element, width, height } = sourceData;
+  const maskCanvas = document.createElement('canvas');
+  maskCanvas.width = width + padding * 2;
+  maskCanvas.height = height + padding * 2;
+  const ctx = maskCanvas.getContext('2d');
+  if (!ctx) return null;
+  const cropX = image.cropX || 0;
+  const cropY = image.cropY || 0;
+  ctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+  ctx.drawImage(
+    element,
+    cropX,
+    cropY,
+    width,
+    height,
+    padding,
+    padding,
+    width,
+    height
+  );
+  const imageData = ctx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const alpha = data[i + 3];
+    if (alpha >= threshold) {
+      data[i] = 255;
+      data[i + 1] = 255;
+      data[i + 2] = 255;
+      data[i + 3] = 255;
+    } else {
+      data[i] = 0;
+      data[i + 1] = 0;
+      data[i + 2] = 0;
+      data[i + 3] = 0;
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+  return maskCanvas;
+};
+
+const buildDilatedMask = (maskCanvas: HTMLCanvasElement, radius: number) => {
+  if (radius <= 0) return maskCanvas;
+  const dilatedCanvas = document.createElement('canvas');
+  dilatedCanvas.width = maskCanvas.width;
+  dilatedCanvas.height = maskCanvas.height;
+  const ctx = dilatedCanvas.getContext('2d');
+  if (!ctx) return maskCanvas;
+  ctx.clearRect(0, 0, dilatedCanvas.width, dilatedCanvas.height);
+  ctx.filter = `blur(${radius}px)`;
+  ctx.drawImage(maskCanvas, 0, 0);
+  ctx.filter = 'none';
+  const imageData = ctx.getImageData(0, 0, dilatedCanvas.width, dilatedCanvas.height);
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const alpha = data[i + 3];
+    if (alpha > 0) {
+      data[i] = 255;
+      data[i + 1] = 255;
+      data[i + 2] = 255;
+      data[i + 3] = 255;
+    } else {
+      data[i] = 0;
+      data[i + 1] = 0;
+      data[i + 2] = 0;
+      data[i + 3] = 0;
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+  return dilatedCanvas;
+};
+
+const buildMaskArray = (maskCanvas: HTMLCanvasElement) => {
+  const ctx = maskCanvas.getContext('2d');
+  if (!ctx) return null;
+  const imageData = ctx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+  const data = imageData.data;
+  const mask = new Uint8Array(maskCanvas.width * maskCanvas.height);
+  for (let i = 0, p = 0; i < data.length; i += 4, p += 1) {
+    mask[p] = data[i + 3] > 0 ? 1 : 0;
+  }
+  return { mask, width: maskCanvas.width, height: maskCanvas.height };
+};
+
+const computeSquaredDistanceToMask = (mask: Uint8Array, width: number, height: number) => {
+  const INF = 1e20;
+  const edt1d = (f: Float64Array, n: number) => {
+    const d = new Float64Array(n);
+    const v = new Int32Array(n);
+    const z = new Float64Array(n + 1);
+    let k = 0;
+    v[0] = 0;
+    z[0] = -INF;
+    z[1] = INF;
+    for (let q = 1; q < n; q += 1) {
+      let s = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+      while (s <= z[k]) {
+        k -= 1;
+        s = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+      }
+      k += 1;
+      v[k] = q;
+      z[k] = s;
+      z[k + 1] = INF;
+    }
+    k = 0;
+    for (let q = 0; q < n; q += 1) {
+      while (z[k + 1] < q) k += 1;
+      const dx = q - v[k];
+      d[q] = dx * dx + f[v[k]];
+    }
+    return d;
+  };
+  const g = new Float64Array(width * height);
+  const fCol = new Float64Array(height);
+  for (let x = 0; x < width; x += 1) {
+    for (let y = 0; y < height; y += 1) {
+      fCol[y] = mask[y * width + x] ? 0 : INF;
+    }
+    const dCol = edt1d(fCol, height);
+    for (let y = 0; y < height; y += 1) {
+      g[y * width + x] = dCol[y];
+    }
+  }
+  const dist2 = new Float32Array(width * height);
+  const fRow = new Float64Array(width);
+  for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * width;
+    for (let x = 0; x < width; x += 1) {
+      fRow[x] = g[rowOffset + x];
+    }
+    const dRow = edt1d(fRow, width);
+    for (let x = 0; x < width; x += 1) {
+      dist2[rowOffset + x] = dRow[x];
+    }
+  }
+  return dist2;
+};
+
+const buildDistanceRingMaskCanvas = (
+  maskData: { mask: Uint8Array; width: number; height: number },
+  dist2: Float32Array,
+  insideDist2: Float32Array | null,
+  innerDistance: number,
+  outerDistance: number,
+  innerOverlap: number
+) => {
+  const ringCanvas = document.createElement('canvas');
+  ringCanvas.width = maskData.width;
+  ringCanvas.height = maskData.height;
+  const ringCtx = ringCanvas.getContext('2d');
+  if (!ringCtx) return null;
+  const imageData = ringCtx.createImageData(maskData.width, maskData.height);
+  const data = imageData.data;
+  const innerSq = innerDistance * innerDistance;
+  const outerSq = outerDistance * outerDistance;
+  const overlapSq = innerOverlap * innerOverlap;
+  const allowInsideOverlap = innerOverlap > 0 && innerDistance <= 0;
+  for (let p = 0; p < maskData.mask.length; p += 1) {
+    const isInside = maskData.mask[p] === 1;
+    if (isInside) {
+      if (!allowInsideOverlap || !insideDist2) continue;
+      if (insideDist2[p] > overlapSq) continue;
+    } else {
+      const d2 = dist2[p];
+      if (d2 <= innerSq || d2 > outerSq) continue;
+    }
+    const i = p * 4;
+    data[i] = 255;
+    data[i + 1] = 255;
+    data[i + 2] = 255;
+    data[i + 3] = 255;
+  }
+  ringCtx.putImageData(imageData, 0, 0);
+  return ringCanvas;
+};
+
+const drawRingMaskLayer = (
+  targetCtx: CanvasRenderingContext2D,
+  ringMaskCanvas: HTMLCanvasElement,
+  color: string,
+  opacity: number
+) => {
+  if (opacity <= 0) return;
+  const layerCanvas = document.createElement('canvas');
+  layerCanvas.width = ringMaskCanvas.width;
+  layerCanvas.height = ringMaskCanvas.height;
+  const ringCtx = layerCanvas.getContext('2d');
+  if (!ringCtx) return;
+  ringCtx.clearRect(0, 0, layerCanvas.width, layerCanvas.height);
+  ringCtx.drawImage(ringMaskCanvas, 0, 0);
+  ringCtx.globalCompositeOperation = 'source-in';
+  ringCtx.fillStyle = color;
+  ringCtx.fillRect(0, 0, layerCanvas.width, layerCanvas.height);
+  ringCtx.globalCompositeOperation = 'source-over';
+  targetCtx.save();
+  targetCtx.globalAlpha = opacity / 100;
+  targetCtx.drawImage(layerCanvas, 0, 0);
+  targetCtx.restore();
+};
+
+const buildStrokeOverlayCanvas = (image: fabric.Image, settings: ImageStrokeSettings) => {
+  const normalized = normalizeImageStrokeSettings(settings);
+  const isDoubleRegular = normalized.style === 'double-regular';
+  const singleStrokeHidden = normalized.opacity <= 0 || normalized.thickness <= 0;
+  const doubleStrokeHidden = normalized.innerLayer.opacity <= 0 && normalized.outerLayer.opacity <= 0;
+  if (normalized.style === 'none' || (!isDoubleRegular && singleStrokeHidden) || (isDoubleRegular && doubleStrokeHidden)) {
+    return null;
+  }
+  const threshold = 10;
+  if (normalized.style === 'regular') {
+    const padding = Math.ceil(normalized.thickness + 4);
+    const baseMaskCanvas = buildAlphaMaskCanvas(image, padding, threshold);
+    if (!baseMaskCanvas) return null;
+    const maskData = buildMaskArray(baseMaskCanvas);
+    if (!maskData) return null;
+    const dist2 = computeSquaredDistanceToMask(maskData.mask, maskData.width, maskData.height);
+    const invertedMask = new Uint8Array(maskData.mask.length);
+    for (let i = 0; i < maskData.mask.length; i += 1) {
+      invertedMask[i] = maskData.mask[i] ? 0 : 1;
+    }
+    const insideDist2 = computeSquaredDistanceToMask(invertedMask, maskData.width, maskData.height);
+    const ringMaskCanvas = buildDistanceRingMaskCanvas(
+      maskData,
+      dist2,
+      insideDist2,
+      0,
+      normalized.thickness,
+      STROKE_INNER_OVERLAP_PX
+    );
+    if (!ringMaskCanvas) return null;
+    const dpr = window.devicePixelRatio || 1;
+    const strokeScaleBoost = normalized.thickness >= 12 ? 1.75 : normalized.thickness >= 6 ? 1.5 : 1.25;
+    const renderScale = Math.min(2.5, dpr * strokeScaleBoost);
+    const outlineCanvas = document.createElement('canvas');
+    outlineCanvas.width = ringMaskCanvas.width * renderScale;
+    outlineCanvas.height = ringMaskCanvas.height * renderScale;
+    const ctx = outlineCanvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.setTransform(renderScale, 0, 0, renderScale, 0, 0);
+    ctx.clearRect(0, 0, ringMaskCanvas.width, ringMaskCanvas.height);
+    ctx.imageSmoothingEnabled = true;
+    if ('imageSmoothingQuality' in ctx) {
+      (ctx as CanvasRenderingContext2D).imageSmoothingQuality = 'high';
+    }
+    drawRingMaskLayer(ctx, ringMaskCanvas, normalized.color, normalized.opacity);
+    return { canvas: outlineCanvas, padding, renderScale };
+  }
+  if (isDoubleRegular) {
+    const totalThickness = normalized.innerLayer.thickness + normalized.outerLayer.thickness;
+    const padding = Math.ceil(totalThickness + 4);
+    const baseMaskCanvas = buildAlphaMaskCanvas(image, padding, threshold);
+    if (!baseMaskCanvas) return null;
+    const maskData = buildMaskArray(baseMaskCanvas);
+    if (!maskData) return null;
+    const dist2 = computeSquaredDistanceToMask(maskData.mask, maskData.width, maskData.height);
+    const invertedMask = new Uint8Array(maskData.mask.length);
+    for (let i = 0; i < maskData.mask.length; i += 1) {
+      invertedMask[i] = maskData.mask[i] ? 0 : 1;
+    }
+    const insideDist2 = computeSquaredDistanceToMask(invertedMask, maskData.width, maskData.height);
+    const innerRingMaskCanvas = buildDistanceRingMaskCanvas(
+      maskData,
+      dist2,
+      insideDist2,
+      0,
+      normalized.innerLayer.thickness,
+      STROKE_INNER_OVERLAP_PX
+    );
+    const outerRingMaskCanvas = buildDistanceRingMaskCanvas(
+      maskData,
+      dist2,
+      insideDist2,
+      normalized.innerLayer.thickness,
+      totalThickness,
+      0
+    );
+    if (!innerRingMaskCanvas || !outerRingMaskCanvas) return null;
+    const dpr = window.devicePixelRatio || 1;
+    const strokeScaleBoost = totalThickness >= 12 ? 1.75 : totalThickness >= 6 ? 1.5 : 1.25;
+    const renderScale = Math.min(2.5, dpr * strokeScaleBoost);
+    const outlineCanvas = document.createElement('canvas');
+    outlineCanvas.width = baseMaskCanvas.width * renderScale;
+    outlineCanvas.height = baseMaskCanvas.height * renderScale;
+    const ctx = outlineCanvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.setTransform(renderScale, 0, 0, renderScale, 0, 0);
+    ctx.clearRect(0, 0, baseMaskCanvas.width, baseMaskCanvas.height);
+    ctx.imageSmoothingEnabled = true;
+    if ('imageSmoothingQuality' in ctx) {
+      (ctx as CanvasRenderingContext2D).imageSmoothingQuality = 'high';
+    }
+    drawRingMaskLayer(ctx, innerRingMaskCanvas, normalized.innerLayer.color, normalized.innerLayer.opacity);
+    drawRingMaskLayer(ctx, outerRingMaskCanvas, normalized.outerLayer.color, normalized.outerLayer.opacity);
+    return { canvas: outlineCanvas, padding, renderScale };
+  }
+  const gap = Math.max(2, normalized.thickness * 0.6);
+  const padding = Math.ceil(gap + normalized.thickness + 4);
+  const baseMaskCanvas = buildAlphaMaskCanvas(image, padding, threshold);
+  if (!baseMaskCanvas) return null;
+  const radius = gap + normalized.thickness / 2;
+  const contourMaskCanvas = radius > 0 ? buildDilatedMask(baseMaskCanvas, radius) : baseMaskCanvas;
+  const maskData = buildMaskArray(contourMaskCanvas);
+  if (!maskData) return null;
+  const segments = buildMarchingSquaresSegments(maskData.mask, maskData.width, maskData.height);
+  if (segments.length === 0) return null;
+  const loops = buildOrderedLoopsFromSegments(segments);
+  const best = selectOuterLoop(loops);
+  if (!best) return null;
+  const outlineLength = computeLoopLength(best);
+  if (outlineLength <= 0) return null;
+  const dpr = window.devicePixelRatio || 1;
+  const strokeScaleBoost = normalized.thickness >= 12 ? 1.75 : normalized.thickness >= 6 ? 1.5 : 1.25;
+  const renderScale = Math.min(2.5, dpr * strokeScaleBoost);
+  const outlineCanvas = document.createElement('canvas');
+  outlineCanvas.width = contourMaskCanvas.width * renderScale;
+  outlineCanvas.height = contourMaskCanvas.height * renderScale;
+  const ctx = outlineCanvas.getContext('2d');
+  if (!ctx) return null;
+  ctx.setTransform(renderScale, 0, 0, renderScale, 0, 0);
+  ctx.clearRect(0, 0, contourMaskCanvas.width, contourMaskCanvas.height);
+  ctx.imageSmoothingEnabled = true;
+  if ('imageSmoothingQuality' in ctx) {
+    (ctx as CanvasRenderingContext2D).imageSmoothingQuality = 'high';
+  }
+  ctx.strokeStyle = normalized.color;
+  ctx.globalAlpha = normalized.opacity / 100;
+  ctx.lineWidth = normalized.thickness;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.miterLimit = 10;
+  if (normalized.style === 'dashed') {
+    const dashPattern = normalizeDashPattern(outlineLength, normalized.thickness);
+    if (dashPattern) {
+      ctx.setLineDash([dashPattern.dash, dashPattern.gap]);
+    } else {
+      ctx.setLineDash([]);
+    }
+  } else {
+    ctx.setLineDash([]);
+  }
+  const outlinePath = new Path2D();
+  outlinePath.moveTo(best[0].x, best[0].y);
+  for (let i = 1; i < best.length; i += 1) {
+    outlinePath.lineTo(best[i].x, best[i].y);
+  }
+  outlinePath.closePath();
+  ctx.stroke(outlinePath);
+  return { canvas: outlineCanvas, padding, renderScale };
+};
+
+const applyImageStrokeOverlay = (fabricCanvas: fabric.Canvas) => {
+  const images = fabricCanvas.getObjects().filter((obj) => obj.type === 'image') as fabric.Image[];
+  images.forEach((image) => {
+    const rawSettings = (image as any)._imageStrokeSettings;
+    const normalized = normalizeImageStrokeSettings(rawSettings);
+    const isUnderlayStroke = normalized.style === 'regular' || normalized.style === 'double-regular';
+    if (
+      normalized.style === 'none' ||
+      (normalized.style !== 'double-regular' && (normalized.opacity <= 0 || normalized.thickness <= 0)) ||
+      (normalized.style === 'double-regular' && normalized.innerLayer.opacity <= 0 && normalized.outerLayer.opacity <= 0)
+    ) return;
+    const result = buildStrokeOverlayCanvas(image, normalized);
+    if (!result) return;
+    const { canvas, padding, renderScale } = result;
+    const center = image.getCenterPoint();
+    const overlay = new fabric.Image(canvas, {
+      left: center.x,
+      top: center.y,
+      scaleX: (image.scaleX || 1) / renderScale,
+      scaleY: (image.scaleY || 1) / renderScale,
+      angle: image.angle,
+      originX: 'center',
+      originY: 'center',
+      flipX: image.flipX,
+      flipY: image.flipY,
+      skewX: image.skewX,
+      skewY: image.skewY,
+      selectable: false,
+      evented: false,
+      hasControls: false,
+      hasBorders: false,
+      excludeFromExport: false,
+    });
+    (image as any)._strokeOverlay = overlay;
+    (image as any)._strokePadding = padding;
+    (image as any)._strokeRenderScale = renderScale;
+    const imageIndex = fabricCanvas.getObjects().indexOf(image);
+    fabricCanvas.add(overlay);
+    if (imageIndex >= 0) {
+      fabricCanvas.moveTo(overlay, isUnderlayStroke ? imageIndex : imageIndex + 1);
+    }
+  });
 };
 
 /**
@@ -23,266 +507,181 @@ const CANVAS_CONFIG = {
 export async function renderCanvasToHighResImage(
   canvasData: string,
   backgroundType: 'white' | 'transparent' = 'white',
-  highResolution: boolean = true
+  _highResolution: boolean = true,
+  canvasSize?: { width?: number; height?: number },
+  options?: {
+    maxWidth?: number;
+    imageFormat?: 'png' | 'jpeg';
+    quality?: number;
+    useOriginalAssets?: boolean;
+  }
 ): Promise<string> {
+  let resolved: { canvasData: string };
+  try {
+    resolved = await deserializeCanvasData(canvasData);
+  } catch (error) {
+    console.warn('画布数据解码失败:', error);
+    throw error;
+  }
   return new Promise((resolve, reject) => {
+    const resolvedWidth = Number(canvasSize?.width);
+    const resolvedHeight = Number(canvasSize?.height);
+    const displayWidth = Number.isFinite(resolvedWidth) && resolvedWidth > 0
+      ? Math.round(resolvedWidth)
+      : CANVAS_CONFIG.BASE_DISPLAY_WIDTH_PX;
+    const displayHeight = Number.isFinite(resolvedHeight) && resolvedHeight > 0
+      ? Math.round(resolvedHeight)
+      : CANVAS_CONFIG.BASE_DISPLAY_HEIGHT_PX;
+    const safeMaxWidth = typeof options?.maxWidth === 'number' && Number.isFinite(options.maxWidth) && options.maxWidth > 0
+      ? options.maxWidth
+      : displayWidth;
+    const multiplier = Math.min(1, safeMaxWidth / displayWidth);
+    const imageFormat = options?.imageFormat === 'jpeg' ? 'jpeg' : 'png';
+    const normalizedQuality = Math.max(0.1, Math.min(1, Number(options?.quality ?? 1) || 1));
+    const preparedCanvasData = prepareCanvasDataForRender(
+      resolved.canvasData,
+      options?.useOriginalAssets === false ? 'editor' : 'export'
+    );
+    const resetViewportTransform = (fabricCanvas: fabric.Canvas) => {
+      fabricCanvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+    };
+    const syncLoadedImageObjectsForExport = (fabricCanvas: fabric.Canvas) => {
+      fabricCanvas.getObjects().forEach((obj) => {
+        if (obj.type !== 'image') return;
+        const image = obj as fabric.Image;
+        const element = image.getElement() as HTMLImageElement | HTMLCanvasElement | null;
+        if (!element) return;
+        const naturalWidth = element instanceof HTMLImageElement
+          ? element.naturalWidth || element.width
+          : element.width;
+        const naturalHeight = element instanceof HTMLImageElement
+          ? element.naturalHeight || element.height
+          : element.height;
+        applyImageCropAndScaleFromRatios(image as unknown as Record<string, any>, {
+          naturalWidth,
+          naturalHeight,
+          preserveDisplaySize: true,
+          fallbackToFullImageWhenRatiosMissing: true,
+        });
+        image.setCoords();
+      });
+    };
+
+    const cleanupCanvas = (fabricCanvas: fabric.Canvas | null) => {
+      if (!fabricCanvas || typeof fabricCanvas.dispose !== 'function') return;
+      try {
+        const canvasElement = fabricCanvas.getElement();
+        if (canvasElement) {
+          const ctx = canvasElement.getContext('2d');
+          ctx?.clearRect(0, 0, canvasElement.width, canvasElement.height);
+        }
+      } catch (error) {
+        console.warn('[CanvasRenderer] Canvas context clearRect failed:', error);
+      }
+      try {
+        fabricCanvas.dispose();
+      } catch (error) {
+        console.warn('[CanvasRenderer] Canvas cleanup failed:', error);
+      }
+    };
+
     try {
-      // 创建临时canvas元素
       const tempCanvas = document.createElement('canvas');
-      const displayWidth = CANVAS_CONFIG.BASE_DISPLAY_WIDTH_PX;
-      const displayHeight = CANVAS_CONFIG.BASE_DISPLAY_HEIGHT_PX;
-      
       tempCanvas.width = displayWidth;
       tempCanvas.height = displayHeight;
-      
-      // 创建fabric canvas实例 - 初始背景色设为白色，后续根据需要调整
+
       const fabricCanvas = new fabric.Canvas(tempCanvas, {
         width: displayWidth,
         height: displayHeight,
-        backgroundColor: '#ffffff', // 先设为白色，与 CanvasEditor 保持一致
+        backgroundColor: '#ffffff',
         preserveObjectStacking: true,
       });
+      resetViewportTransform(fabricCanvas);
 
-      // 加载canvas数据
-      fabricCanvas.loadFromJSON(canvasData, () => {
+      fabricCanvas.loadFromJSON(preparedCanvasData, () => {
         try {
-          // 在导出前，对画布内容进行缩放和居中处理，使其占满画布的90%
-          const scaleAndCenterContent = () => {
-            const objects = fabricCanvas.getObjects();
-            if (objects.length === 0) return;
-
-            // 直接计算所有对象的边界框，避免使用临时组破坏clipPath关系
-            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-            
-            objects.forEach(obj => {
-              const boundingRect = obj.getBoundingRect();
-              minX = Math.min(minX, boundingRect.left);
-              minY = Math.min(minY, boundingRect.top);
-              maxX = Math.max(maxX, boundingRect.left + boundingRect.width);
-              maxY = Math.max(maxY, boundingRect.top + boundingRect.height);
-            });
-
-            const boundingRect = {
-              left: minX,
-              top: minY,
-              width: maxX - minX,
-              height: maxY - minY
-            };
-
-            // 计算缩放比例，使内容占满画布的90%
-            const targetScale = 0.90;
-            const scaleX = (displayWidth * targetScale) / boundingRect.width;
-            const scaleY = (displayHeight * targetScale) / boundingRect.height;
-            const scale = Math.min(scaleX, scaleY); // 保持宽高比
-
-            // 计算居中位置
-            const scaledWidth = boundingRect.width * scale;
-            const scaledHeight = boundingRect.height * scale;
-            const centerX = displayWidth / 2;
-            const centerY = displayHeight / 2;
-            const offsetX = centerX - (boundingRect.left + boundingRect.width / 2) * scale;
-            const offsetY = centerY - (boundingRect.top + boundingRect.height / 2) * scale;
-
-            // 应用缩放和位移到所有对象，同时保持clipPath关系
-            objects.forEach(obj => {
-              // 缩放对象
-              obj.scaleX = (obj.scaleX || 1) * scale;
-              obj.scaleY = (obj.scaleY || 1) * scale;
-              
-              // 调整位置
-              obj.left = (obj.left || 0) * scale + offsetX;
-              obj.top = (obj.top || 0) * scale + offsetY;
-              
-              // 如果对象有clipPath，也需要同步缩放和位移clipPath
-              if (obj.clipPath) {
-                const clipPath = obj.clipPath as fabric.Object;
-                clipPath.scaleX = (clipPath.scaleX || 1) * scale;
-                clipPath.scaleY = (clipPath.scaleY || 1) * scale;
-                clipPath.left = (clipPath.left || 0) * scale + offsetX;
-                clipPath.top = (clipPath.top || 0) * scale + offsetY;
-                clipPath.setCoords();
-              }
-              
-              // 设置坐标
-              obj.setCoords();
-            });
-
-            fabricCanvas.renderAll();
+          resetViewportTransform(fabricCanvas);
+          syncLoadedImageObjectsForExport(fabricCanvas);
+          applyImageStrokeOverlay(fabricCanvas);
+          resetViewportTransform(fabricCanvas);
+          const previousBackground = fabricCanvas.backgroundColor;
+          const exportOptions: any = {
+            format: imageFormat,
+            quality: normalizedQuality,
+            left: 0,
+            top: 0,
+            width: displayWidth,
+            height: displayHeight,
+            multiplier,
+            withoutTransform: true,
+            enableRetinaScaling: false,
           };
-
-          // 执行缩放和居中
-          scaleAndCenterContent();
-
-          // 如果是透明背景，需要特殊处理（与 CanvasEditor.exportCanvas 保持一致）
-          if (backgroundType === 'transparent') {
-            // 临时保存原始背景色
-            const originalBackgroundColor = fabricCanvas.backgroundColor;
-            
-            // 设置透明背景
+          if (backgroundType === 'white' || imageFormat === 'jpeg') {
+            exportOptions.backgroundColor = '#ffffff';
+          } else {
             fabricCanvas.setBackgroundColor('transparent', () => {
               fabricCanvas.renderAll();
             });
-            
-            // 设置导出参数
-            const exportOptions: any = {
-              format: 'png',
-              quality: 1,
-            };
-            
-            // 如果是高分辨率导出，设置适中的倍数（降低文件大小）
-            if (highResolution) {
-              exportOptions.multiplier = 2; // 2倍分辨率，平衡质量和文件大小
-            }
-            
-            // 导出透明背景图片
-            const dataUrl = fabricCanvas.toDataURL(exportOptions);
-            
-            // 恢复原始背景色
-            fabricCanvas.setBackgroundColor(originalBackgroundColor, () => {
-              fabricCanvas.renderAll();
-            });
-            
-            // 安全地清理资源
-            try {
-              if (fabricCanvas && typeof fabricCanvas.dispose === 'function') {
-                const canvasElement = fabricCanvas.getElement();
-                if (canvasElement) {
-                  const ctx = canvasElement.getContext('2d');
-                  if (ctx && typeof ctx.clearRect === 'function') {
-                    try {
-                      ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-                    } catch (error) {
-                      console.warn('[CanvasRenderer] Canvas context clearRect failed:', error);
-                    }
-                  }
-                }
-                fabricCanvas.dispose();
-              }
-            } catch (error) {
-              console.warn('[CanvasRenderer] Canvas cleanup failed:', error);
-            }
-            
-            resolve(dataUrl);
-          } else {
-            // 白色背景的正常导出
-            const exportOptions: any = {
-              format: 'png',
-              quality: 1,
-              backgroundColor: '#ffffff',
-            };
-            
-            // 如果是高分辨率导出，设置适中的倍数（降低文件大小）
-            if (highResolution) {
-              exportOptions.multiplier = 2; // 2倍分辨率，平衡质量和文件大小
-            }
-            
-            // 导出为dataURL
-            const dataUrl = fabricCanvas.toDataURL(exportOptions);
-            
-            // 安全地清理资源
-            try {
-              if (fabricCanvas && typeof fabricCanvas.dispose === 'function') {
-                const canvasElement = fabricCanvas.getElement();
-                if (canvasElement) {
-                  const ctx = canvasElement.getContext('2d');
-                  if (ctx && typeof ctx.clearRect === 'function') {
-                    try {
-                      ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-                    } catch (error) {
-                      console.warn('[CanvasRenderer] Canvas context clearRect failed:', error);
-                    }
-                  }
-                }
-                fabricCanvas.dispose();
-              }
-            } catch (error) {
-              console.warn('[CanvasRenderer] Canvas cleanup failed:', error);
-            }
-            
-            resolve(dataUrl);
           }
+          const dataUrl = fabricCanvas.toDataURL(exportOptions);
+          fabricCanvas.setBackgroundColor(previousBackground || '', () => {
+            fabricCanvas.renderAll();
+          });
+          cleanupCanvas(fabricCanvas);
+          resolve(dataUrl);
         } catch (error) {
           console.warn('[CanvasRenderer] Canvas导出失败，可能是由于CORS污染:', error);
-          
-          // 备用方案：创建一个新的Canvas，重新绘制所有对象（与 CanvasEditor 保持一致）
           try {
-            const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = fabricCanvas.width || 800;
-            tempCanvas.height = fabricCanvas.height || 600;
-            const tempCtx = tempCanvas.getContext('2d');
-            
-            if (!tempCtx) {
+            const fallbackCanvas = document.createElement('canvas');
+            fallbackCanvas.width = Math.max(1, Math.round(displayWidth * multiplier));
+            fallbackCanvas.height = Math.max(1, Math.round(displayHeight * multiplier));
+            const fallbackCtx = fallbackCanvas.getContext('2d');
+            if (!fallbackCtx) {
               throw new Error('无法创建临时Canvas上下文');
             }
-            
-            // 根据背景类型设置背景
-            if (backgroundType === 'white') {
-              tempCtx.fillStyle = '#ffffff';
-              tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+            if (backgroundType === 'white' || imageFormat === 'jpeg') {
+              fallbackCtx.fillStyle = '#ffffff';
+              fallbackCtx.fillRect(0, 0, fallbackCanvas.width, fallbackCanvas.height);
             }
-            // 透明背景不需要填充背景色
-            
-            // 绘制提示信息
-            tempCtx.fillStyle = backgroundType === 'transparent' ? '#333333' : '#666666';
-            tempCtx.font = '16px Arial';
-            tempCtx.textAlign = 'center';
-            tempCtx.fillText('设计预览', tempCanvas.width / 2, tempCanvas.height / 2 - 20);
-            tempCtx.fillText('(包含外部图片，无法完整导出)', tempCanvas.width / 2, tempCanvas.height / 2 + 20);
-            
-            // 安全地清理资源
-            try {
-              if (fabricCanvas && typeof fabricCanvas.dispose === 'function') {
-                fabricCanvas.dispose();
-              }
-            } catch (error) {
-              console.warn('[CanvasRenderer] Canvas cleanup failed in fallback:', error);
+            fallbackCtx.fillStyle = backgroundType === 'transparent' ? '#333333' : '#666666';
+            fallbackCtx.font = '16px Arial';
+            fallbackCtx.textAlign = 'center';
+            fallbackCtx.fillText('设计预览', fallbackCanvas.width / 2, fallbackCanvas.height / 2 - 20);
+            fallbackCtx.fillText('(包含外部图片，无法完整导出)', fallbackCanvas.width / 2, fallbackCanvas.height / 2 + 20);
+            cleanupCanvas(fabricCanvas);
+            if (imageFormat === 'jpeg') {
+              resolve(fallbackCanvas.toDataURL('image/jpeg', normalizedQuality));
+              return;
             }
-            resolve(tempCanvas.toDataURL('image/png'));
+            resolve(fallbackCanvas.toDataURL('image/png'));
           } catch (fallbackError) {
             console.error('[CanvasRenderer] 备用导出方案也失败:', fallbackError);
-            
-            // 最后的备用方案：返回一个简单的占位图
             const placeholderCanvas = document.createElement('canvas');
             placeholderCanvas.width = 400;
             placeholderCanvas.height = 300;
             const placeholderCtx = placeholderCanvas.getContext('2d');
-            
-            if (placeholderCtx) {
-              // 根据背景类型设置占位图背景
-              if (backgroundType === 'white') {
-                placeholderCtx.fillStyle = '#f0f0f0';
-                placeholderCtx.fillRect(0, 0, 400, 300);
-              }
-              
-              placeholderCtx.fillStyle = backgroundType === 'transparent' ? '#333333' : '#999999';
-              placeholderCtx.font = '14px Arial';
-              placeholderCtx.textAlign = 'center';
-              placeholderCtx.fillText('无法导出设计预览', 200, 150);
-              
-              // 安全地清理资源
-              try {
-                if (fabricCanvas && typeof fabricCanvas.dispose === 'function') {
-                  fabricCanvas.dispose();
-                }
-              } catch (error) {
-                console.warn('[CanvasRenderer] Canvas cleanup failed in placeholder:', error);
-              }
-              resolve(placeholderCanvas.toDataURL('image/png'));
-            } else {
-              // 安全地清理资源
-              try {
-                if (fabricCanvas && typeof fabricCanvas.dispose === 'function') {
-                  fabricCanvas.dispose();
-                }
-              } catch (error) {
-                console.warn('[CanvasRenderer] Canvas cleanup failed in placeholder error:', error);
-              }
+            if (!placeholderCtx) {
+              cleanupCanvas(fabricCanvas);
               reject(new Error('无法创建占位图'));
+              return;
             }
+            if (backgroundType === 'white' || imageFormat === 'jpeg') {
+              placeholderCtx.fillStyle = '#f0f0f0';
+              placeholderCtx.fillRect(0, 0, 400, 300);
+            }
+            placeholderCtx.fillStyle = backgroundType === 'transparent' ? '#333333' : '#999999';
+            placeholderCtx.font = '14px Arial';
+            placeholderCtx.textAlign = 'center';
+            placeholderCtx.fillText('无法导出设计预览', 200, 150);
+            cleanupCanvas(fabricCanvas);
+            if (imageFormat === 'jpeg') {
+              resolve(placeholderCanvas.toDataURL('image/jpeg', normalizedQuality));
+              return;
+            }
+            resolve(placeholderCanvas.toDataURL('image/png'));
           }
         }
       });
-
     } catch (error) {
       console.error('Canvas渲染失败:', error);
       reject(error);

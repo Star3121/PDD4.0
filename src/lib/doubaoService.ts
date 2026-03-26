@@ -39,18 +39,54 @@ class DoubaoService {
   // 规范化产品类别
   private normalizeProductCategory(category: string): string {
     if (!category) return '';
-    const allowedCategories = ['抱枕', '法兰毯', '羊羔绒', '挂布', '地毯', '杯子', '抱枕被'];
     const trimmed = category.trim();
-    if (allowedCategories.includes(trimmed)) {
+    const text = trimmed.toLowerCase();
+
+    if (text.includes('羊羔绒') && (text.includes('毛毯') || text.includes('毯'))) {
+      return '羊羔绒毛毯';
+    }
+    if ((text.includes('牛奶真丝绒') || text.includes('仿羊绒')) && (text.includes('地毯') || text.includes('毯'))) {
+      return '仿羊绒地毯';
+    }
+    if (text.includes('丝圈') && (text.includes('地毯') || text.includes('毯'))) {
+      return '丝圈地毯';
+    }
+    if ((text.includes('法兰绒') || text.includes('法兰')) && (text.includes('毛毯') || text.includes('毯')) && !text.includes('羊羔绒')) {
+      return '法兰绒毛毯';
+    }
+    if ((text.includes('地毯') || text.includes('毯')) && !text.includes('仿羊绒') && !text.includes('牛奶真丝绒') && !text.includes('丝圈')) {
+      return '水晶绒地毯';
+    }
+    if ((text.includes('宠物') || text.includes('猫') || text.includes('狗')) && (text.includes('抱枕') || text.includes('靠垫'))) {
+      return '宠物抱枕';
+    }
+    if ((text.includes('人物') || text.includes('真人') || text.includes('人形') || text.includes('肖像')) && (text.includes('抱枕') || text.includes('靠垫'))) {
+      return '人物抱枕';
+    }
+    if (text.includes('抱枕') || text.includes('靠垫')) {
+      return '人物抱枕';
+    }
+    if (text.includes('挂布') || text.includes('场景布')) {
+      return '挂布';
+    }
+    if (text.includes('马克杯') || text.includes('杯子')) {
+      return '马克杯';
+    }
+    if (
+      trimmed === '人物抱枕' ||
+      trimmed === '宠物抱枕' ||
+      trimmed === '法兰绒毛毯' ||
+      trimmed === '羊羔绒毛毯' ||
+      trimmed === '水晶绒地毯' ||
+      trimmed === '仿羊绒地毯' ||
+      trimmed === '丝圈地毯' ||
+      trimmed === '挂布' ||
+      trimmed === '马克杯' ||
+      trimmed === '其他'
+    ) {
       return trimmed;
     }
-    // 尝试模糊匹配（如果包含关键词）
-    for (const allowed of allowedCategories) {
-      if (trimmed.includes(allowed)) {
-        return allowed;
-      }
-    }
-    return ''; // 如果都不匹配，返回空字符串，让用户手动选择
+    return '其他';
   }
 
   // 调用豆包API的通用方法
@@ -87,7 +123,19 @@ class DoubaoService {
 ${orderText}
 
 重要识别规则：
-1. productCategory：只识别以下几个产品类别：抱枕、法兰毯、羊羔绒、挂布、地毯、杯子、抱枕被。必须严格匹配这几个词之一。
+1. productCategory：只允许以下10个类目之一，必须严格返回其中一个：人物抱枕、宠物抱枕、法兰绒毛毯、羊羔绒毛毯、水晶绒地毯、仿羊绒地毯、丝圈地毯、挂布、马克杯、其他。
+   类目判定必须基于订单标题/产品标题里的商品内容，不要根据收件信息或备注猜测。
+   详细归类规则：
+   - 人物抱枕：标题偏向人形/人物/真人/肖像，且有抱枕或靠垫关键词
+   - 宠物抱枕：标题偏向宠物/猫/狗，且有抱枕或靠垫关键词
+   - 法兰绒毛毯：标题偏向法兰绒和毛毯；只要是毛毯且不带“羊羔绒”，优先归此类
+   - 羊羔绒毛毯：标题偏向羊羔绒和毛毯
+   - 水晶绒地毯：标题偏向地毯，且不含“仿羊绒/牛奶真丝绒/丝圈”关键词
+   - 仿羊绒地毯：标题偏向仿羊绒或牛奶真丝绒且是地毯
+   - 丝圈地毯：标题偏向丝圈且是地毯
+   - 挂布：标题偏向挂布或场景布
+   - 马克杯：标题偏向马克杯或杯子
+   - 其他：与以上都不相关
 2. productModel：提取尺寸数据前同一行的中文描述（如"晚安宝贝"、"多头款【黄色背景】"），只要中文部分不包含尺寸
 3. productSpecs：只提取尺寸数据（如"150x200cm"），不包含材质/颜色等
 4. transactionTime：转成 YYYY-MM-DDTHH:mm 格式
@@ -152,7 +200,19 @@ ${orderText}
 3. recipientInfo 保留中括号数字
 4. 确保识别出所有可能订单，即便不完整
 5. 字段规则与单订单相同：
-   - productCategory：只识别以下几个产品类别：抱枕、法兰毯、羊羔绒、挂布、地毯、杯子、抱枕被。必须严格匹配这几个词之一。
+   - productCategory：只允许以下10个类目之一，必须严格返回其中一个：人物抱枕、宠物抱枕、法兰绒毛毯、羊羔绒毛毯、水晶绒地毯、仿羊绒地毯、丝圈地毯、挂布、马克杯、其他。
+     类目判定必须基于订单标题/产品标题里的商品内容，不要根据收件信息或备注猜测。
+     详细归类规则：
+     - 人物抱枕：标题偏向人形/人物/真人/肖像，且有抱枕或靠垫关键词
+     - 宠物抱枕：标题偏向宠物/猫/狗，且有抱枕或靠垫关键词
+     - 法兰绒毛毯：标题偏向法兰绒和毛毯；只要是毛毯且不带“羊羔绒”，优先归此类
+     - 羊羔绒毛毯：标题偏向羊羔绒和毛毯
+     - 水晶绒地毯：标题偏向地毯，且不含“仿羊绒/牛奶真丝绒/丝圈”关键词
+     - 仿羊绒地毯：标题偏向仿羊绒或牛奶真丝绒且是地毯
+     - 丝圈地毯：标题偏向丝圈且是地毯
+     - 挂布：标题偏向挂布或场景布
+     - 马克杯：标题偏向马克杯或杯子
+     - 其他：与以上都不相关
    - productModel：提取尺寸数据前同一行的中文描述，只要中文部分不包含尺寸
    - productSpecs：只提取尺寸数据，不包含材质/颜色等
    - transactionTime：转成 YYYY-MM-DDTHH:mm 格式
@@ -210,7 +270,19 @@ ${orderText}
     const prompt = `请仔细分析这张订单图片，并按照固定的JSON格式返回订单信息：
 
 重要识别规则：
-1. productCategory：只识别以下几个产品类别：抱枕、法兰毯、羊羔绒、挂布、地毯、杯子、抱枕被。必须严格匹配这几个词之一。
+1. productCategory：只允许以下10个类目之一，必须严格返回其中一个：人物抱枕、宠物抱枕、法兰绒毛毯、羊羔绒毛毯、水晶绒地毯、仿羊绒地毯、丝圈地毯、挂布、马克杯、其他。
+   类目判定必须基于订单标题/产品标题里的商品内容，不要根据收件信息或备注猜测。
+   详细归类规则：
+   - 人物抱枕：标题偏向人形/人物/真人/肖像，且有抱枕或靠垫关键词
+   - 宠物抱枕：标题偏向宠物/猫/狗，且有抱枕或靠垫关键词
+   - 法兰绒毛毯：标题偏向法兰绒和毛毯；只要是毛毯且不带“羊羔绒”，优先归此类
+   - 羊羔绒毛毯：标题偏向羊羔绒和毛毯
+   - 水晶绒地毯：标题偏向地毯，且不含“仿羊绒/牛奶真丝绒/丝圈”关键词
+   - 仿羊绒地毯：标题偏向仿羊绒或牛奶真丝绒且是地毯
+   - 丝圈地毯：标题偏向丝圈且是地毯
+   - 挂布：标题偏向挂布或场景布
+   - 马克杯：标题偏向马克杯或杯子
+   - 其他：与以上都不相关
 2. productModel：提取尺寸数据前同一行的中文描述（如"晚安宝贝"、"多头款【黄色背景】"），只要中文部分不包含尺寸
 3. productSpecs：只提取尺寸数据（如"150x200cm"），不包含材质/颜色等
 4. transactionTime：转成 YYYY-MM-DDTHH:mm 格式

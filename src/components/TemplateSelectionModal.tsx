@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Template } from '../api/index';
 import { buildImageUrl, buildThumbnailUrl } from '../lib/utils';
 import { useTemplates } from '../hooks/useTemplates';
+import Pagination from './Pagination';
 
 interface TemplateSelectionModalProps {
   isOpen: boolean;
@@ -18,10 +19,11 @@ const TemplateSelectionModal: React.FC<TemplateSelectionModalProps> = ({
   const [activeSearchQuery, setActiveSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
 
-  const { templates, categories, loading, totalPages } = useTemplates({
+  const { templates, categories, loading, total, totalPages } = useTemplates({
     page: currentPage,
-    pageSize: 24,
+    pageSize,
     search: activeSearchQuery,
     category: selectedCategory,
     enabled: isOpen
@@ -116,7 +118,7 @@ const TemplateSelectionModal: React.FC<TemplateSelectionModalProps> = ({
               <div className="text-gray-500">暂无模板</div>
             </div>
           ) : (
-            <div className="grid grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-4">
+            <div className="grid grid-cols-2 gap-4">
               {templates.map(template => (
                 <div
                   key={template.id}
@@ -137,7 +139,7 @@ const TemplateSelectionModal: React.FC<TemplateSelectionModalProps> = ({
                     <h3 className="font-medium text-gray-900 text-xs truncate" title={template.name}>
                       {template.name}
                     </h3>
-                    <p className="text-xs text-gray-500 mt-1 truncate">
+                    <p className="text-xs text-gray-500 mt-1 truncate" title={getCategoryDisplayName(template.category)}>
                       {getCategoryDisplayName(template.category)}
                     </p>
                   </div>
@@ -148,27 +150,22 @@ const TemplateSelectionModal: React.FC<TemplateSelectionModalProps> = ({
         </div>
 
         {/* 分页 */}
-        {totalPages > 1 && (
-          <div className="p-4 border-t border-gray-200 bg-gray-50">
-            <div className="flex items-center justify-center gap-2">
-              <button
-                onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-                disabled={currentPage === 1}
-                className="px-3 py-1 text-sm border border-gray-300 rounded-md disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-100"
-              >
-                上一页
-              </button>
-              <span className="text-sm text-gray-600">
-                第 {currentPage} 页，共 {totalPages} 页
-              </span>
-              <button
-                onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-                disabled={currentPage === totalPages}
-                className="px-3 py-1 text-sm border border-gray-300 rounded-md disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-100"
-              >
-                下一页
-              </button>
-            </div>
+        {(totalPages > 1 || pageSize !== 10) && (
+          <div className="border-t border-gray-200 bg-gray-50">
+            <Pagination
+              currentPage={currentPage}
+              totalPages={totalPages}
+              pageSize={pageSize}
+              total={total}
+              onPageChange={setCurrentPage}
+              onPageSizeChange={(size) => {
+                setPageSize(size);
+                setCurrentPage(1);
+              }}
+              pageSizeOptions={[10, 20, 50]}
+              showPageInfo={false}
+              className="px-4 py-3"
+            />
           </div>
         )}
       </div>

@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { templatesAPI } from '../api';
 import { Template } from '../api/index';
-import { buildImageUrl } from '../lib/utils';
+import { buildImageUrl, buildThumbnailUrl } from '../lib/utils';
+import { useTemplates } from '../hooks/useTemplates';
+import Pagination from './Pagination';
 
 interface CategoryTemplatesModalProps {
   isOpen: boolean;
@@ -18,41 +19,22 @@ const CategoryTemplatesModal: React.FC<CategoryTemplatesModalProps> = ({
   category,
   categoryName
 }) => {
-  const [templates, setTemplates] = useState<Template[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
 
   useEffect(() => {
     if (isOpen) {
-      fetchAllTemplates();
+      setCurrentPage(1);
     }
   }, [isOpen, category]);
 
-  const fetchAllTemplates = async () => {
-    try {
-      setLoading(true);
-      const params: any = {
-        page: 1,
-        pageSize: 100, // 获取所有模板
-        category: category === 'all' ? undefined : category,
-      };
-
-      if (params.category === undefined) {
-        delete params.category;
-      }
-
-      const response = await templatesAPI.getAll(params);
-      if (Array.isArray(response)) {
-        setTemplates(response);
-      } else {
-        setTemplates(response.data || []);
-      }
-    } catch (error) {
-      console.error('获取模板失败:', error);
-      setTemplates([]);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const { templates, loading, total, totalPages } = useTemplates({
+    page: currentPage,
+    pageSize,
+    search: '',
+    category,
+    enabled: isOpen
+  });
 
   const handleTemplateSelect = (template: Template) => {
     onTemplateSelect(template);
@@ -94,7 +76,7 @@ const CategoryTemplatesModal: React.FC<CategoryTemplatesModalProps> = ({
               <p className="mt-4 text-gray-500">该分类下暂无模板</p>
             </div>
           ) : (
-            <div className="grid grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-4 max-h-96 overflow-y-auto">
+            <div className="grid grid-cols-2 gap-4 max-h-96 overflow-y-auto pr-1">
               {templates.map(template => (
                 <div
                   key={template.id}
@@ -104,10 +86,13 @@ const CategoryTemplatesModal: React.FC<CategoryTemplatesModalProps> = ({
                   {/* 模板图片 */}
                   <div className="aspect-square bg-gray-50 overflow-hidden">
                     <img
-                      src={buildImageUrl(template.image_path)}
+                      src={buildThumbnailUrl(template.image_path, 'thumb')}
                       alt={template.name}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
                       loading="lazy"
+                      onError={(e) => {
+                        e.currentTarget.src = buildImageUrl(template.image_path);
+                      }}
                     />
                   </div>
                   
@@ -116,6 +101,9 @@ const CategoryTemplatesModal: React.FC<CategoryTemplatesModalProps> = ({
                     <h4 className="text-xs font-medium text-gray-900 truncate" title={template.name}>
                       {template.name}
                     </h4>
+                    <p className="text-[11px] text-gray-500 truncate" title={categoryName}>
+                      {categoryName}
+                    </p>
                   </div>
 
                   {/* 悬停效果 */}
@@ -134,11 +122,21 @@ const CategoryTemplatesModal: React.FC<CategoryTemplatesModalProps> = ({
           )}
         </div>
 
-        {/* 底部 */}
-        <div className="px-6 py-4 border-t border-gray-200 bg-gray-50">
-          <p className="text-sm text-gray-600 text-center">
-            💡 点击模板即可应用到画布
-          </p>
+        <div className="border-t border-gray-200 bg-gray-50">
+          <Pagination
+            currentPage={currentPage}
+            totalPages={totalPages}
+            pageSize={pageSize}
+            total={total}
+            onPageChange={setCurrentPage}
+            onPageSizeChange={(size) => {
+              setPageSize(size);
+              setCurrentPage(1);
+            }}
+            pageSizeOptions={[10, 20, 50]}
+            showPageInfo={false}
+            className="px-6 py-3"
+          />
         </div>
       </div>
     </div>

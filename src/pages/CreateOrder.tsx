@@ -686,21 +686,27 @@ const CreateOrder: React.FC = () => {
                       <label className="block text-sm font-medium text-gray-700 mb-1">
                         产品类别
                       </label>
-                      <select
+                      <input
+                        type="text"
                         value={order.product_category}
                         onChange={(e) => updateOrder(order.id, 'product_category', e.target.value)}
                         className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="可手动填写或从下拉建议中选择"
+                        list="product-category-options"
                         disabled={order.saved}
-                      >
-                        <option value="">请选择产品类别</option>
-                        <option value="抱枕">抱枕</option>
-                        <option value="法兰毯">法兰毯</option>
-                        <option value="羊羔绒">羊羔绒</option>
-                        <option value="挂布">挂布</option>
-                        <option value="地毯">地毯</option>
-                        <option value="杯子">杯子</option>
-                        <option value="抱枕被">抱枕被</option>
-                      </select>
+                      />
+                      <datalist id="product-category-options">
+                        <option value="人物抱枕" />
+                        <option value="宠物抱枕" />
+                        <option value="法兰绒毛毯" />
+                        <option value="羊羔绒毛毯" />
+                        <option value="水晶绒地毯" />
+                        <option value="仿羊绒地毯" />
+                        <option value="丝圈地毯" />
+                        <option value="挂布" />
+                        <option value="马克杯" />
+                        <option value="其他" />
+                      </datalist>
                     </div>
 
                     <div>

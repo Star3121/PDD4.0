@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ordersAPI, uploadAPI, designsAPI } from '../api';
 import { Order, PaginatedResponse } from '../api/index';
 import Layout from '../components/Layout';
 import OrderEditModal from '../components/OrderEditModal';
 import ExportConfirmModal from '../components/ExportConfirmModal';
+import ExportImageOptionsModal from '../components/ExportImageOptionsModal';
 import Pagination from '../components/Pagination';
 import { formatRelativeTime, formatYMDHM, buildImageUrl } from '../lib/utils';
 import JSZip from 'jszip';
@@ -13,6 +14,20 @@ import { compressImageForHTML, getImageBlob, getExtensionFromBlob, sanitizeFilen
 import { renderCanvasToHighResImage, dataUrlToBlob, getBlobExtension } from '../lib/canvasRenderer';
 import { toast } from 'react-hot-toast';
 
+type ExportBackgroundType = 'white' | 'transparent';
+type ExportImageFormat = 'png' | 'jpg';
+
+type ExportImageOptions = {
+  backgroundType: ExportBackgroundType;
+  imageFormat: ExportImageFormat;
+};
+
+type ImportStatusFailure = {
+  orderNumber: string;
+  reason: string;
+  rowNumber: number;
+};
+
 const OrderList: React.FC = () => {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
@@ -20,6 +35,8 @@ const OrderList: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchInput, setSearchInput] = useState(""); // 新增：用于绑定输入框的中间状态
   const [markFilter, setMarkFilter] = useState<'all' | 'pending_design' | 'pending_confirm' | 'confirmed' | 'exported'>('all');
+  const [productCategoryFilter, setProductCategoryFilter] = useState('all');
+  const [productCategoryOptions, setProductCategoryOptions] = useState<string[]>([]);
   
   // 导出时间筛选相关状态
   const [exportTimeFilter, setExportTimeFilter] = useState<'all' | 'today' | 'yesterday' | 'custom'>('all');
@@ -46,7 +63,24 @@ const OrderList: React.FC = () => {
   // 导出相关状态
   const [showExportConfirmModal, setShowExportConfirmModal] = useState(false);
   const [exportingOrders, setExportingOrders] = useState<Order[]>([]);
+  const [pendingExportOrders, setPendingExportOrders] = useState<Order[]>([]);
   const [isExporting, setIsExporting] = useState(false);
+  const [showExportImageOptionsModal, setShowExportImageOptionsModal] = useState(false);
+  const [exportImageBackgroundType, setExportImageBackgroundType] = useState<ExportBackgroundType>('transparent');
+  const [exportImageFormat, setExportImageFormat] = useState<ExportImageFormat>('png');
+  const [currentExportOptions, setCurrentExportOptions] = useState<ExportImageOptions>({
+    backgroundType: 'transparent',
+    imageFormat: 'png'
+  });
+  const [isImportingStatus, setIsImportingStatus] = useState(false);
+  const [showImportProgressModal, setShowImportProgressModal] = useState(false);
+  const [importProgressPercent, setImportProgressPercent] = useState(0);
+  const [importProgressMessage, setImportProgressMessage] = useState('准备导入');
+  const [importSuccessCount, setImportSuccessCount] = useState(0);
+  const [importFailureCount, setImportFailureCount] = useState(0);
+  const [importFailures, setImportFailures] = useState<ImportStatusFailure[]>([]);
+  const [showImportFailuresModal, setShowImportFailuresModal] = useState(false);
+  const statusImportInputRef = useRef<HTMLInputElement | null>(null);
   
   // 列表过渡效果状态
   const [listVisible, setListVisible] = useState(true);
@@ -68,6 +102,14 @@ const OrderList: React.FC = () => {
     pending_confirm: '待确认',
     confirmed: '已确认',
     exported: '已导出'
+  };
+
+  const importStatusTextToMark: Record<string, 'pending_design' | 'pending_confirm' | 'confirmed' | 'exported'> = {
+    待出图: 'pending_design',
+    待确认: 'pending_confirm',
+    已确认: 'confirmed',
+    已出图: 'exported',
+    已导出: 'exported'
   };
 
   // 根据分类生成固定颜色
@@ -140,7 +182,11 @@ const OrderList: React.FC = () => {
   // 初始加载和主要筛选条件变化时显示loading
   useEffect(() => {
     fetchOrders('loading');
-  }, [currentPage, pageSize, searchQuery, markFilter]);
+  }, [currentPage, pageSize, searchQuery, markFilter, productCategoryFilter]);
+
+  useEffect(() => {
+    fetchProductCategories();
+  }, [searchQuery, markFilter, exportTimeFilter, customDateRange.startDate, customDateRange.endDate]);
 
   // 时间筛选变化时不显示loading，避免闪屏
   useEffect(() => {
@@ -152,17 +198,18 @@ const OrderList: React.FC = () => {
   useEffect(() => {
     // 获取全量数据用于统计
     fetchAllOrdersForCounting();
-  }, [customDateRange]); // 添加 customDateRange 依赖，当时间范围变化时重新获取统计
+  }, [customDateRange.startDate, customDateRange.endDate, searchQuery, productCategoryFilter]);
 
 
 
   const fetchAllOrdersForCounting = async () => {
     try {
-      // 使用新的统计API
-      const stats = await ordersAPI.getStats(
-        customDateRange.startDate,
-        customDateRange.endDate
-      );
+      const stats = await ordersAPI.getStats({
+        customStartDate: customDateRange.startDate,
+        customEndDate: customDateRange.endDate,
+        search: searchQuery,
+        productCategory: productCategoryFilter === 'all' ? '' : productCategoryFilter,
+      });
       setMarkCounts(stats);
     } catch (error) {
       console.error('获取订单统计数据失败:', error);
@@ -183,6 +230,7 @@ const OrderList: React.FC = () => {
         pageSize,
         search: searchQuery,
         mark: markFilter === 'all' ? '' : markFilter,
+        productCategory: productCategoryFilter === 'all' ? '' : productCategoryFilter,
         sortBy: 'created_at',
         sortOrder: 'DESC'
       };
@@ -222,6 +270,27 @@ const OrderList: React.FC = () => {
         // 恢复列表可见性，触发淡入效果
         setTimeout(() => setListVisible(true), 50);
       }
+    }
+  };
+
+  const fetchProductCategories = async () => {
+    try {
+      const categories = await ordersAPI.getCategories({
+        search: searchQuery,
+        mark: markFilter === 'all' ? '' : markFilter,
+        exportTimeFilter: markFilter === 'exported' && exportTimeFilter !== 'all' ? exportTimeFilter : '',
+        exportStartDate: markFilter === 'exported' && exportTimeFilter === 'custom' ? customDateRange.startDate : '',
+        exportEndDate: markFilter === 'exported' && exportTimeFilter === 'custom' ? customDateRange.endDate : '',
+      });
+      setProductCategoryOptions(categories);
+      if (productCategoryFilter !== 'all' && !categories.includes(productCategoryFilter)) {
+        setProductCategoryFilter('all');
+        setCurrentPage(1);
+        setSelectedOrders(new Set());
+      }
+    } catch (error) {
+      console.error('获取产品分类筛选项失败:', error);
+      setProductCategoryOptions([]);
     }
   };
 
@@ -289,6 +358,12 @@ const OrderList: React.FC = () => {
     }
   };
 
+  const handleProductCategoryFilterChange = (category: string) => {
+    setProductCategoryFilter(category);
+    setCurrentPage(1);
+    setSelectedOrders(new Set());
+  };
+
   // 导出时间筛选处理函数
   const handleExportTimeFilterChange = (filter: 'all' | 'today' | 'yesterday' | 'custom') => {
     setExportTimeFilter(filter);
@@ -307,32 +382,351 @@ const OrderList: React.FC = () => {
     setCurrentPage(1); // 重置到第一页
   };
 
+  const handleDownloadImportFailuresReport = () => {
+    if (importFailures.length === 0) return;
+    const worksheetData = [
+      ['订单号', '失败原因', 'Excel行号'],
+      ...importFailures.map((item) => [item.orderNumber || '（空）', item.reason, String(item.rowNumber)])
+    ];
+    const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, '失败记录');
+    const fileData = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([fileData], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `订单状态导入失败明细_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const fetchOrderMapForImport = async (targetOrderNumbers: Set<string>) => {
+    const orderMap = new Map<string, Order>();
+    const remaining = new Set(targetOrderNumbers);
+    let page = 1;
+    let totalPages = 1;
+    const pageSizeForImport = 1000;
+    while (page <= totalPages && remaining.size > 0) {
+      const response = await ordersAPI.getAll({
+        page,
+        pageSize: pageSizeForImport,
+        sortBy: 'created_at',
+        sortOrder: 'DESC'
+      });
+      const data = 'data' in response ? response.data : response;
+      totalPages = 'data' in response ? response.pagination.totalPages : 1;
+      data.forEach((order) => {
+        if (remaining.has(order.order_number)) {
+          orderMap.set(order.order_number, order);
+          remaining.delete(order.order_number);
+        }
+      });
+      page += 1;
+    }
+    return orderMap;
+  };
+
+  const handleImportStatusFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    const lowerName = file.name.toLowerCase();
+    if (!lowerName.endsWith('.xlsx') && !lowerName.endsWith('.xls')) {
+      toast.error('仅支持上传 .xls 或 .xlsx 文件');
+      return;
+    }
+    if (isImportingStatus) {
+      toast.error('正在导入中，请稍候');
+      return;
+    }
+    const failures: ImportStatusFailure[] = [];
+    try {
+      setIsImportingStatus(true);
+      setShowImportProgressModal(true);
+      setImportProgressPercent(5);
+      setImportProgressMessage('读取Excel文件');
+      setImportSuccessCount(0);
+      setImportFailureCount(0);
+      setImportFailures([]);
+      setShowImportFailuresModal(false);
+
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: 'array' });
+      const firstSheetName = workbook.SheetNames[0];
+      if (!firstSheetName) {
+        throw new Error('Excel文件为空');
+      }
+      const sheet = workbook.Sheets[firstSheetName];
+      const rows = XLSX.utils.sheet_to_json<(string | number | undefined)[]>(sheet, { header: 1, defval: '' });
+      if (rows.length === 0) {
+        throw new Error('Excel文件为空');
+      }
+      const headerOrderNo = String(rows[0]?.[0] ?? '').trim();
+      const headerStatus = String(rows[0]?.[1] ?? '').trim();
+      if (headerOrderNo !== '订单号' || headerStatus !== '订单状态') {
+        throw new Error('Excel表头格式错误，请使用模板文件');
+      }
+      const dataRows = rows
+        .slice(1)
+        .map((row, index) => ({
+          rowNumber: index + 2,
+          orderNumber: String(row[0] ?? '').trim(),
+          statusText: String(row[1] ?? '').trim()
+        }))
+        .filter((item) => item.orderNumber || item.statusText);
+
+      if (dataRows.length === 0) {
+        throw new Error('Excel中没有可导入的数据');
+      }
+      if (dataRows.length > 1000) {
+        throw new Error('单次导入最多支持1000条记录');
+      }
+
+      setImportProgressPercent(12);
+      setImportProgressMessage('验证数据格式');
+
+      const validRows: Array<{
+        rowNumber: number;
+        orderNumber: string;
+        mark: 'pending_design' | 'pending_confirm' | 'confirmed' | 'exported';
+      }> = [];
+      const seenOrderNumbers = new Set<string>();
+
+      dataRows.forEach((row) => {
+        if (!row.orderNumber) {
+          failures.push({ orderNumber: '', reason: '订单号为空', rowNumber: row.rowNumber });
+          return;
+        }
+        if (!row.statusText) {
+          failures.push({ orderNumber: row.orderNumber, reason: '订单状态为空', rowNumber: row.rowNumber });
+          return;
+        }
+        const normalizedMark = importStatusTextToMark[row.statusText];
+        if (!normalizedMark) {
+          failures.push({ orderNumber: row.orderNumber, reason: '状态值非法', rowNumber: row.rowNumber });
+          return;
+        }
+        if (seenOrderNumbers.has(row.orderNumber)) {
+          failures.push({ orderNumber: row.orderNumber, reason: '重复订单号', rowNumber: row.rowNumber });
+          return;
+        }
+        seenOrderNumbers.add(row.orderNumber);
+        validRows.push({
+          rowNumber: row.rowNumber,
+          orderNumber: row.orderNumber,
+          mark: normalizedMark
+        });
+      });
+
+      setImportProgressPercent(24);
+      setImportProgressMessage('匹配系统订单');
+
+      const targetNumbers = new Set(validRows.map((item) => item.orderNumber));
+      const orderMap = await fetchOrderMapForImport(targetNumbers);
+
+      let successCount = 0;
+      let processedCount = 0;
+      const totalToProcess = validRows.length || 1;
+
+      setImportProgressPercent(35);
+      setImportProgressMessage('更新订单状态');
+
+      for (const row of validRows) {
+        const matchedOrder = orderMap.get(row.orderNumber);
+        if (!matchedOrder) {
+          failures.push({
+            orderNumber: row.orderNumber,
+            reason: '订单号不存在',
+            rowNumber: row.rowNumber
+          });
+        } else {
+          try {
+            await ordersAPI.update(matchedOrder.id, {
+              mark: row.mark,
+              export_status: row.mark === 'exported' ? 'exported' : 'not_exported'
+            });
+            successCount += 1;
+          } catch (error) {
+            failures.push({
+              orderNumber: row.orderNumber,
+              reason: `系统更新失败${error instanceof Error && error.message ? `: ${error.message}` : ''}`,
+              rowNumber: row.rowNumber
+            });
+          }
+        }
+        processedCount += 1;
+        const progress = 35 + Math.round((processedCount / totalToProcess) * 60);
+        setImportProgressPercent(Math.min(progress, 95));
+      }
+
+      setImportSuccessCount(successCount);
+      setImportFailureCount(failures.length);
+      setImportFailures(failures);
+      setImportProgressPercent(100);
+      setImportProgressMessage('导入完成');
+      await fetchOrders('silent');
+      await fetchAllOrdersForCounting();
+
+      toast.success(`导入完成：成功 ${successCount} 条，失败 ${failures.length} 条`);
+      if (failures.length > 0) {
+        setShowImportFailuresModal(true);
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : '导入失败';
+      toast.error(errorMessage);
+      setImportProgressMessage(errorMessage);
+    } finally {
+      setIsImportingStatus(false);
+      setTimeout(() => {
+        setShowImportProgressModal(false);
+      }, 300);
+    }
+  };
+
   // 处理导出选中订单
   const handleExportSelected = async () => {
     const selectedOrdersList = orders.filter(order => selectedOrders.has(order.id));
-    
-    // 检查是否包含已导出的订单
-    const exportedCount = selectedOrdersList.filter(order => order.export_status === 'exported').length;
-    const notExportedCount = selectedOrdersList.length - exportedCount;
-    
-    if (exportedCount > 0) {
-      // 显示确认模态框
-      setExportingOrders(selectedOrdersList);
-      setShowExportConfirmModal(true);
-    } else {
-      // 直接导出
-      await performExport(selectedOrdersList);
+    if (selectedOrdersList.length === 0) {
+      toast.error('没有选择要导出的订单');
+      return;
     }
+    setPendingExportOrders(selectedOrdersList);
+    setExportImageBackgroundType('transparent');
+    setExportImageFormat('png');
+    setShowExportImageOptionsModal(true);
+  };
+
+  const handleCancelExportImageOptions = () => {
+    if (isExporting) return;
+    setShowExportImageOptionsModal(false);
+    setPendingExportOrders([]);
+  };
+
+  const handleConfirmExportImageOptions = async () => {
+    const options: ExportImageOptions = {
+      backgroundType: exportImageBackgroundType,
+      imageFormat: exportImageFormat
+    };
+    setCurrentExportOptions(options);
+    setShowExportImageOptionsModal(false);
+    const exportedCount = pendingExportOrders.filter(order => order.export_status === 'exported').length;
+    if (exportedCount > 0) {
+      setExportingOrders(pendingExportOrders);
+      setShowExportConfirmModal(true);
+      return;
+    }
+    await performExport(pendingExportOrders, options);
+    setPendingExportOrders([]);
   };
 
   // 确认重新导出
   const handleExportConfirmOverwrite = async () => {
     setShowExportConfirmModal(false);
-    await performExport(exportingOrders);
+    await performExport(exportingOrders, currentExportOptions);
+  };
+
+  const normalizeExportRenderBackgroundType = (options: ExportImageOptions): 'white' | 'transparent' => {
+    if (options.imageFormat === 'jpg') return 'white';
+    return options.backgroundType;
+  };
+
+  const convertPngDataUrlToJpgDataUrl = async (dataUrl: string): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = image.naturalWidth || image.width;
+        canvas.height = image.naturalHeight || image.height;
+        const context = canvas.getContext('2d');
+        if (!context) {
+          reject(new Error('无法创建图片格式转换画布'));
+          return;
+        }
+        context.fillStyle = '#ffffff';
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.95));
+      };
+      image.onerror = () => reject(new Error('图片格式转换失败'));
+      image.src = dataUrl;
+    });
+  };
+
+  const normalizeExportCategoryName = (category?: string | null): string => {
+    const raw = (category || '').trim();
+    const sanitized = sanitizeFilename(raw);
+    return sanitized || '未分类';
+  };
+
+  const parsePageBackgroundType = (pageBackgroundColor?: string, fallback: 'white' | 'transparent' = 'white'): 'white' | 'transparent' => {
+    if (typeof pageBackgroundColor !== 'string') return fallback;
+    return pageBackgroundColor.trim().toLowerCase() === 'transparent' ? 'transparent' : fallback;
+  };
+
+  const normalizeDesignBackgroundType = (value?: string): 'white' | 'transparent' => {
+    if (typeof value !== 'string') return 'white';
+    return value.trim().toLowerCase() === 'transparent' ? 'transparent' : 'white';
+  };
+
+  const extractDesignExportPages = (design: any): Array<{
+    canvasData: string;
+    width?: number;
+    height?: number;
+    backgroundType: 'white' | 'transparent';
+    previewPath?: string;
+  }> => {
+    const defaultBackgroundType = normalizeDesignBackgroundType(design.background_type);
+    if (typeof design.canvas_data !== 'string' || !design.canvas_data.trim()) {
+      return [];
+    }
+    try {
+      const parsed = JSON.parse(design.canvas_data);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((page: any) => {
+            const isHiddenPage = page?.hidden === true || String(page?.hidden).toLowerCase() === 'true';
+            if (isHiddenPage) return null;
+            const pageCanvasData = typeof page?.elements === 'string' && page.elements.trim()
+              ? page.elements
+              : typeof page?.canvas_data === 'string' && page.canvas_data.trim()
+                ? page.canvas_data
+                : '';
+            if (!pageCanvasData) return null;
+            const width = Number(page?.width);
+            const height = Number(page?.height);
+            return {
+              canvasData: pageCanvasData,
+              width: Number.isFinite(width) && width > 0 ? width : undefined,
+              height: Number.isFinite(height) && height > 0 ? height : undefined,
+              backgroundType: parsePageBackgroundType(page?.backgroundColor, defaultBackgroundType),
+              previewPath: design.preview_path
+            };
+          })
+          .filter(Boolean) as Array<{
+          canvasData: string;
+          width?: number;
+          height?: number;
+          backgroundType: 'white' | 'transparent';
+          previewPath?: string;
+        }>;
+      }
+    } catch (error) {
+      console.warn('解析多页面画布数据失败，使用原始画布导出:', error);
+    }
+    return [{
+      canvasData: design.canvas_data,
+      backgroundType: defaultBackgroundType,
+      previewPath: design.preview_path
+    }];
   };
 
   // 执行导出
-  const performExport = async (ordersToExport: Order[]) => {
+  const performExport = async (ordersToExport: Order[], options: ExportImageOptions) => {
     if (ordersToExport.length === 0) {
       toast.error('没有选择要导出的订单');
       return;
@@ -343,33 +737,46 @@ const OrderList: React.FC = () => {
     try {
       const zip = new JSZip();
       const today = new Date().toISOString().split('T')[0];
-      
-      // 生成收件信息.txt
-      let recipientInfo = '';
-      ordersToExport.forEach((order, index) => {
-        const orderNumber = String(index + 1).padStart(2, '0');
-        const recipientData = `${order.customer_name} ${order.phone} ${order.address}`;
-        recipientInfo += `${orderNumber} 收件信息：${recipientData}\n\n`;
+      const groupedByCategory = new Map<string, Order[]>();
+      ordersToExport.forEach((order) => {
+        const categoryName = normalizeExportCategoryName(order.product_category);
+        if (!groupedByCategory.has(categoryName)) {
+          groupedByCategory.set(categoryName, []);
+        }
+        groupedByCategory.get(categoryName)!.push(order);
       });
-      zip.file('收件信息.txt', recipientInfo);
-      
-      // 生成订单对账表.html
-      const htmlContent = await generateOrderHTML(ordersToExport);
-      zip.file('订单对账表.html', htmlContent);
-      
-      // 生成订单详情(无图).xlsx
-      const xlsxBuffer = generateOrderXLSX(ordersToExport);
-      zip.file('订单详情(无图).xlsx', xlsxBuffer);
-      
-      // 处理图片文件
-      await processOrderImages(zip, ordersToExport);
+      const categoryEntries = Array.from(groupedByCategory.entries());
+      const isSingleCategory = categoryEntries.length === 1;
+      const zipFileName = isSingleCategory
+        ? `${categoryEntries[0][0]}订单导出_${today}.zip`
+        : `订单导出_${today}.zip`;
+
+      for (const [categoryName, categoryOrders] of categoryEntries) {
+        const folderPrefix = isSingleCategory ? '' : `${categoryName}_${today}/`;
+
+        let recipientInfo = '';
+        categoryOrders.forEach((order, index) => {
+          const orderNumber = String(index + 1).padStart(2, '0');
+          const recipientData = `${order.customer_name} ${order.phone} ${order.address}`;
+          recipientInfo += `${orderNumber} 收件信息：${recipientData}\n\n`;
+        });
+        zip.file(`${folderPrefix}收件信息.txt`, recipientInfo);
+
+        const htmlContent = await generateOrderHTML(categoryOrders, options);
+        zip.file(`${folderPrefix}订单对账表.html`, htmlContent);
+
+        const xlsxBuffer = generateOrderXLSX(categoryOrders);
+        zip.file(`${folderPrefix}订单详情(无图).xlsx`, xlsxBuffer);
+
+        await processOrderImages(zip, categoryOrders, options, folderPrefix);
+      }
       
       // 生成ZIP文件并下载
       const zipBlob = await zip.generateAsync({ type: 'blob' });
       const url = URL.createObjectURL(zipBlob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `系统2订单导出_${today}.zip`;
+      a.download = zipFileName;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -392,7 +799,8 @@ const OrderList: React.FC = () => {
   };
 
   // 生成订单对账表HTML
-  const generateOrderHTML = async (ordersToExport: Order[]): Promise<string> => {
+  const generateOrderHTML = async (ordersToExport: Order[], options: ExportImageOptions): Promise<string> => {
+    const renderBackgroundType = normalizeExportRenderBackgroundType(options);
     let htmlContent = `
 <!DOCTYPE html>
 <html>
@@ -452,27 +860,30 @@ const OrderList: React.FC = () => {
         const designs = await designsAPI.getByOrderId(order.id);
         if (designs && designs.length > 0) {
           const validDesigns = designs.filter(d => d.canvas_data && d.canvas_data !== '{}');
-          if (validDesigns.length > 0) {
+          const exportPages = validDesigns.flatMap(design => extractDesignExportPages(design));
+          if (exportPages.length > 0) {
             htmlContent += `<div class="image-container">`;
-            for (const design of validDesigns) {
+            for (const exportPage of exportPages) {
               try {
-                // 使用高分辨率画布渲染生成图片
                 const highResDataUrl = await renderCanvasToHighResImage(
-                  design.canvas_data,
-                  'white', // 使用白色背景
-                  false // HTML中使用中等分辨率即可，避免文件过大
+                  exportPage.canvasData,
+                  renderBackgroundType,
+                  false,
+                  {
+                    width: exportPage.width,
+                    height: exportPage.height
+                  }
                 );
-                
-                // 压缩图片用于HTML显示
-                const compressedImage = await compressImageForHTML(highResDataUrl, 400, 0.8);
+                const htmlImageDataUrl = options.imageFormat === 'jpg'
+                  ? await convertPngDataUrlToJpgDataUrl(highResDataUrl)
+                  : highResDataUrl;
+                const compressedImage = await compressImageForHTML(htmlImageDataUrl, 400, 0.8);
                 htmlContent += `<img src="${compressedImage}" alt="确认图片" class="thumbnail" style="margin: 5px;">`;
               } catch (error) {
                 console.warn('高分辨率图片生成失败，尝试使用预览图:', error);
-                
-                // 回退到使用预览图
-                if (design.preview_path) {
+                if (exportPage.previewPath) {
                   try {
-                    const imageUrl = buildImageUrl(design.preview_path);
+                    const imageUrl = buildImageUrl(exportPage.previewPath);
                     const compressedImage = await compressImageForHTML(imageUrl);
                     htmlContent += `<img src="${compressedImage}" alt="确认图片" class="thumbnail" style="margin: 5px;">`;
                   } catch (fallbackError) {
@@ -531,7 +942,13 @@ const OrderList: React.FC = () => {
   };
 
   // 处理订单图片
-  const processOrderImages = async (zip: JSZip, ordersToExport: Order[]) => {
+  const processOrderImages = async (
+    zip: JSZip,
+    ordersToExport: Order[],
+    options: ExportImageOptions,
+    folderPrefix: string = ''
+  ) => {
+    const renderBackgroundType = normalizeExportRenderBackgroundType(options);
     for (let i = 0; i < ordersToExport.length; i++) {
       const order = ordersToExport[i];
       const orderNumber = String(i + 1).padStart(2, '0');
@@ -539,55 +956,55 @@ const OrderList: React.FC = () => {
       try {
         const designs = await designsAPI.getByOrderId(order.id);
         if (designs && designs.length > 0) {
-          // 过滤有canvas_data的设计
           const validDesigns = designs.filter(d => d.canvas_data && d.canvas_data !== '{}');
-          
-          for (let j = 0; j < validDesigns.length; j++) {
-            const design = validDesigns[j];
-            
+          const exportPages = validDesigns.flatMap(design => extractDesignExportPages(design));
+
+          for (let j = 0; j < exportPages.length; j++) {
+            const exportPage = exportPages[j];
             try {
-              // 使用高分辨率画布渲染生成图片，使用设计保存时选择的背景类型
-              const backgroundType = (design.background_type as 'white' | 'transparent') || 'white'; // 默认白色背景
               const highResDataUrl = await renderCanvasToHighResImage(
-                design.canvas_data,
-                backgroundType, // 使用设计保存时选择的背景类型
-                true // 使用高分辨率以匹配画布下载质量
+                exportPage.canvasData,
+                renderBackgroundType,
+                true,
+                {
+                  width: exportPage.width,
+                  height: exportPage.height
+                }
               );
-              
-              // 转换为Blob
-              const imageBlob = dataUrlToBlob(highResDataUrl);
-              const extension = getBlobExtension(imageBlob);
+              const exportDataUrl = options.imageFormat === 'jpg'
+                ? await convertPngDataUrlToJpgDataUrl(highResDataUrl)
+                : highResDataUrl;
+              const imageBlob = dataUrlToBlob(exportDataUrl);
+              const extension = options.imageFormat === 'jpg' ? 'jpg' : getBlobExtension(imageBlob);
               const productSpecs = sanitizeFilename(order.product_specs || '默认规格');
               
               let filename: string;
-              if (validDesigns.length === 1) {
+              if (exportPages.length === 1) {
                 filename = `${orderNumber}+${productSpecs}.${extension}`;
               } else {
-                const suffix = String.fromCharCode(97 + j); // a, b, c...
+                const suffix = String.fromCharCode(97 + j);
                 filename = `${orderNumber}${suffix}+${productSpecs}.${extension}`;
               }
               
-              zip.file(filename, imageBlob);
+              zip.file(`${folderPrefix}${filename}`, imageBlob);
             } catch (error) {
               console.warn(`生成高分辨率图片失败 (订单${orderNumber}, 设计${j+1}):`, error);
-              
-              // 回退到使用预览图
-              if (design.preview_path) {
+              if (exportPage.previewPath) {
                 try {
-                  const imageUrl = buildImageUrl(design.preview_path);
+                  const imageUrl = buildImageUrl(exportPage.previewPath);
                   const imageBlob = await getImageBlob(imageUrl);
                   const extension = getExtensionFromBlob(imageBlob);
                   const productSpecs = sanitizeFilename(order.product_specs || '默认规格');
                   
                   let filename: string;
-                  if (validDesigns.length === 1) {
+                  if (exportPages.length === 1) {
                     filename = `${orderNumber}+${productSpecs}_preview.${extension}`;
                   } else {
                     const suffix = String.fromCharCode(97 + j);
                     filename = `${orderNumber}${suffix}+${productSpecs}_preview.${extension}`;
                   }
                   
-                  zip.file(filename, imageBlob);
+                  zip.file(`${folderPrefix}${filename}`, imageBlob);
                 } catch (fallbackError) {
                   console.warn(`回退预览图也失败 (订单${orderNumber}, 设计${j+1}):`, fallbackError);
                 }
@@ -811,6 +1228,23 @@ const OrderList: React.FC = () => {
                 </svg>
                 新建订单
               </button>
+              <button
+                onClick={() => statusImportInputRef.current?.click()}
+                disabled={isImportingStatus}
+                className="inline-flex items-center px-3 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1M12 12v9m0-9l-3 3m3-3l3 3M12 3v9" />
+                </svg>
+                {isImportingStatus ? '导入中...' : '状态导入'}
+              </button>
+              <input
+                ref={statusImportInputRef}
+                type="file"
+                accept=".xlsx,.xls"
+                onChange={handleImportStatusFile}
+                className="hidden"
+              />
 
               {orders.length > 0 && (
                 <button
@@ -998,6 +1432,35 @@ const OrderList: React.FC = () => {
                 )}
               </div>
             )}
+
+            <div className="mt-3 pt-3 border-t border-gray-100">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-medium text-gray-700 mr-2">产品分类:</span>
+                <button
+                  onClick={() => handleProductCategoryFilterChange('all')}
+                  className={`inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-full border transition-all duration-200 ${
+                    productCategoryFilter === 'all'
+                      ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50 hover:border-gray-400'
+                  }`}
+                >
+                  全部
+                </button>
+                {productCategoryOptions.map(category => (
+                  <button
+                    key={category}
+                    onClick={() => handleProductCategoryFilterChange(category)}
+                    className={`inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-full border transition-all duration-200 ${
+                      productCategoryFilter === category
+                        ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50 hover:border-gray-400'
+                    }`}
+                  >
+                    {category}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1029,7 +1492,7 @@ const OrderList: React.FC = () => {
           <div className="card p-10 text-center">
             <div className="mx-auto h-12 w-12 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center border border-blue-200">ℹ️</div>
             <h3 className="mt-4 text-base font-semibold text-gray-900">{total === 0 ? '暂无订单' : '没有符合条件的订单'}</h3>
-            <p className="mt-1 text-sm text-gray-500">{total === 0 ? '点击下方按钮创建你的第一条订单。' : '请尝试调整搜索或状态筛选条件。'}</p>
+            <p className="mt-1 text-sm text-gray-500">{total === 0 ? '点击下方按钮创建你的第一条订单。' : '请尝试调整搜索、状态或产品分类筛选条件。'}</p>
             <div className="mt-6">
               <button
                 onClick={() => navigate('/orders/new')}
@@ -1170,7 +1633,7 @@ const OrderList: React.FC = () => {
             total={total}
             onPageChange={handlePageChange}
             onPageSizeChange={handlePageSizeChange}
-            pageSizeOptions={[20, 40, 80]}
+            pageSizeOptions={[20, 40, 80, 100]}
           />
         </div>
       )}
@@ -1282,12 +1745,97 @@ const OrderList: React.FC = () => {
       {/* 导出确认模态框 */}
       <ExportConfirmModal
         isOpen={showExportConfirmModal}
-        onClose={() => setShowExportConfirmModal(false)}
+        onClose={() => {
+          setShowExportConfirmModal(false);
+          setPendingExportOrders([]);
+        }}
         onConfirm={handleExportConfirmOverwrite}
         exportedCount={exportingOrders.filter(order => order.export_status === 'exported').length}
         notExportedCount={exportingOrders.filter(order => order.export_status !== 'exported').length}
         totalCount={exportingOrders.length}
       />
+      <ExportImageOptionsModal
+        isOpen={showExportImageOptionsModal}
+        isLoading={isExporting}
+        backgroundType={exportImageBackgroundType}
+        imageFormat={exportImageFormat}
+        onBackgroundTypeChange={setExportImageBackgroundType}
+        onImageFormatChange={setExportImageFormat}
+        onCancel={handleCancelExportImageOptions}
+        onConfirm={handleConfirmExportImageOptions}
+      />
+      {showImportProgressModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">订单状态导入</h3>
+            <p className="text-sm text-gray-600 mb-4">{importProgressMessage}</p>
+            <div className="w-full h-2 rounded-full bg-gray-200 overflow-hidden">
+              <div
+                className="h-full bg-indigo-600 transition-all duration-300"
+                style={{ width: `${Math.max(0, Math.min(100, importProgressPercent))}%` }}
+              />
+            </div>
+            <div className="mt-3 flex justify-between text-xs text-gray-500">
+              <span>进度 {importProgressPercent}%</span>
+              <span>成功 {importSuccessCount} / 失败 {importFailureCount}</span>
+            </div>
+          </div>
+        </div>
+      )}
+      {showImportFailuresModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
+          <div className="w-full max-w-3xl rounded-xl bg-white p-6 shadow-xl max-h-[80vh] overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900">导入失败明细</h3>
+              <button
+                onClick={() => setShowImportFailuresModal(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="text-sm text-gray-600 mb-3">
+              本次导入成功 {importSuccessCount} 条，失败 {importFailureCount} 条
+            </div>
+            <div className="flex-1 overflow-auto border border-gray-200 rounded-lg">
+              <table className="min-w-full text-sm">
+                <thead className="bg-gray-50 sticky top-0">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-medium text-gray-700">订单号</th>
+                    <th className="px-3 py-2 text-left font-medium text-gray-700">失败原因</th>
+                    <th className="px-3 py-2 text-left font-medium text-gray-700">Excel行号</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {importFailures.map((item, index) => (
+                    <tr key={`${item.orderNumber}-${item.rowNumber}-${index}`}>
+                      <td className="px-3 py-2 text-gray-800">{item.orderNumber || '（空）'}</td>
+                      <td className="px-3 py-2 text-red-600">{item.reason}</td>
+                      <td className="px-3 py-2 text-gray-600">{item.rowNumber}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="mt-4 flex items-center justify-end gap-3">
+              <button
+                onClick={handleDownloadImportFailuresReport}
+                className="inline-flex items-center px-4 py-2 rounded-lg bg-amber-500 text-white text-sm font-medium hover:bg-amber-600"
+              >
+                下载失败明细Excel
+              </button>
+              <button
+                onClick={() => setShowImportFailuresModal(false)}
+                className="px-4 py-2 rounded-lg border border-gray-300 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </Layout>
   );
 };

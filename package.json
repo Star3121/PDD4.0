@@ -11,6 +11,7 @@
     "build:static": "node scripts/generate-static-data.js",
     "vercel-build": "npm run build",
     "lint": "eslint .",
+    "test": "vitest run --coverage",
     "preview": "vite preview",
     "server": "node api/server.js",
     "sync": "node scripts/git-sync.js"
@@ -28,6 +29,8 @@
     "express": "^4.18.2",
     "express-fileupload": "^1.4.3",
     "fabric": "^5.3.0",
+    "fonteditor-core": "^2.6.3",
+    "fontkit": "^2.0.4",
     "jszip": "^3.10.1",
     "multer": "^1.4.5-lts.1",
     "node-fetch": "^3.3.2",
@@ -39,6 +42,7 @@
     "sqlite3": "^5.1.6",
     "swr": "^2.3.8",
     "tailwind-merge": "^3.3.1",
+    "ttf2woff2": "^8.0.1",
     "vite-tsconfig-paths": "^5.1.4",
     "xlsx": "^0.18.5"
   },
@@ -50,17 +54,21 @@
     "@types/multer": "^1.4.11",
     "@types/react": "^18.2.43",
     "@types/react-dom": "^18.2.17",
+    "@types/supertest": "^7.2.0",
     "@typescript-eslint/eslint-plugin": "^6.14.0",
     "@typescript-eslint/parser": "^6.14.0",
     "@vitejs/plugin-react": "^4.2.1",
+    "@vitest/coverage-v8": "^2.1.9",
     "autoprefixer": "^10.4.21",
     "eslint": "^8.55.0",
     "eslint-plugin-react-hooks": "^4.6.0",
     "eslint-plugin-react-refresh": "^0.4.5",
     "postcss": "^8.5.6",
+    "supertest": "^7.2.2",
     "tailwindcss": "^3.4.18",
     "typescript": "^5.2.2",
     "typescript-eslint": "^8.46.2",
-    "vite": "^5.0.8"
+    "vite": "^5.0.8",
+    "vitest": "^2.1.8"
   }
 }
