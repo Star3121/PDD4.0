@@ -5,7 +5,25 @@
       "src": "api/index.js",
       "use": "@vercel/node",
       "config": {
-        "includeFiles": ["api/**", "uploads/**"]
+        "includeFiles": ["api/**"],
+        "excludeFiles": [
+          "uploads/**",
+          "public/**",
+          "docs/**",
+          "src/**",
+          "dist/**",
+          "supabase/**",
+          "temp/**",
+          "font_repo/**",
+          "**/*.sqlite",
+          "**/*.db",
+          "node-v18.19.0-darwin-arm64/**",
+          "node-v18.19.0-darwin-arm64.tar.gz",
+          "migration_dump.json",
+          "rest_out.json",
+          "rest_anon.json",
+          "create_out.json"
+        ]
       }
     },
     {
