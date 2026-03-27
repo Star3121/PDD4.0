@@ -36,11 +36,21 @@ async function request<T>(
     const response = await fetch(url, config);
     
     if (!response.ok) {
-      const error = await response.json();
-      // 优先处理后端返回的 error 和 details 字段
-      const errorMessage = error.message || error.error || '请求失败';
-      const details = error.details ? ` (${error.details})` : '';
-      throw new Error(`${errorMessage}${details}`);
+      let errorMessage = `请求失败（${response.status}）`;
+      try {
+        const error = await response.json();
+        const backendMessage = error.message || error.error || '';
+        const details = error.details ? ` (${error.details})` : '';
+        if (backendMessage) {
+          errorMessage = `${backendMessage}${details}`;
+        }
+      } catch {
+        const text = await response.text();
+        if (text) {
+          errorMessage = `${errorMessage}: ${text.slice(0, 200)}`;
+        }
+      }
+      throw new Error(errorMessage);
     }
     
     return await response.json();

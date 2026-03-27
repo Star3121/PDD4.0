@@ -265,7 +265,8 @@ const OrderList: React.FC = () => {
       console.error('获取订单列表失败:', error);
       // 只有在非静默模式下才提示错误
       if (mode !== 'silent') {
-        alert('获取订单列表失败');
+        const detail = error instanceof Error ? error.message : '';
+        alert(detail ? `获取订单列表失败：${detail}` : '获取订单列表失败');
       }
     } finally {
       if (mode === 'loading') {
