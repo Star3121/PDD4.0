@@ -4,12 +4,13 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import archiver from 'archiver';
-import ttf2woff2 from 'ttf2woff2';
 import { Font } from 'fonteditor-core';
 import * as fontkit from 'fontkit';
+import { createRequire } from 'module';
 import storageService from '../services/storage.js';
 
 const router = express.Router();
+const require = createRequire(import.meta.url);
 
 // 数据库实例将从服务器注入
 let db;
@@ -66,6 +67,31 @@ const fontUpload = multer({
 
 const sanitizeFileName = (name) => name.replace(/[^\w\u4e00-\u9fa5.-]+/g, '_');
 
+let ttf2woff2Converter = null;
+let ttf2woff2LoadFailed = false;
+
+const loadTtf2Woff2 = () => {
+  if (ttf2woff2Converter) {
+    return ttf2woff2Converter;
+  }
+  if (ttf2woff2LoadFailed) {
+    throw new Error('当前部署环境暂不支持将 ttf/otf 转换为 woff2，请直接上传 .woff2 字体文件');
+  }
+
+  try {
+    const loadedModule = require('ttf2woff2');
+    ttf2woff2Converter = loadedModule?.default || loadedModule;
+    return ttf2woff2Converter;
+  } catch (error) {
+    ttf2woff2LoadFailed = true;
+    const message = String(error?.message || '');
+    if (error?.code === 'ENOENT' || message.includes('ttf2woff2.wasm')) {
+      throw new Error('当前部署环境缺少字体转换运行时，请直接上传 .woff2 字体文件');
+    }
+    throw new Error('字体转换依赖加载失败，请稍后重试');
+  }
+};
+
 const extractFontFamily = (buffer, fallbackName) => {
   try {
     const parsed = fontkit.create(buffer);
@@ -82,12 +108,14 @@ const convertToWoff2Buffer = (file) => {
   if (ext === '.woff2') {
     outputBuffer = Buffer.from(file.buffer);
   } else if (ext === '.ttf') {
-    outputBuffer = Buffer.from(ttf2woff2(file.buffer));
+    const converter = loadTtf2Woff2();
+    outputBuffer = Buffer.from(converter(file.buffer));
   } else if (ext === '.otf') {
+    const converter = loadTtf2Woff2();
     const ttfBuffer = Buffer.from(
       Font.create(file.buffer, { type: 'otf' }).write({ type: 'ttf' })
     );
-    outputBuffer = Buffer.from(ttf2woff2(ttfBuffer));
+    outputBuffer = Buffer.from(converter(ttfBuffer));
   } else {
     throw new Error('仅支持 ttf、otf、woff2 字体文件');
   }

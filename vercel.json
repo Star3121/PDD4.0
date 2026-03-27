@@ -5,7 +5,10 @@
       "src": "api/index.js",
       "use": "@vercel/node",
       "config": {
-        "includeFiles": ["api/**"],
+        "includeFiles": [
+          "api/**",
+          "node_modules/ttf2woff2/jssrc/**"
+        ],
         "excludeFiles": [
           "uploads/**",
           "public/**",
