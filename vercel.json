@@ -65,15 +65,15 @@
     },
     {
       "src": "/",
-      "dest": "/dist/index.html"
+      "dest": "/index.html"
     },
     {
       "src": "/(.*\\.(?:js|css|png|jpg|jpeg|gif|svg|ico|webp|woff|woff2|ttf|otf|map|json|txt|xml))",
-      "dest": "/dist/$1"
+      "dest": "/$1"
     },
     {
       "src": "/(.*)",
-      "dest": "/dist/index.html"
+      "dest": "/index.html"
     }
   ]
 }
