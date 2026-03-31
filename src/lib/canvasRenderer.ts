@@ -6,7 +6,9 @@ import {
   normalizeDashPattern,
   selectOuterLoop,
 } from './outlineTracing';
-import { applyImageCropAndScaleFromRatios, deserializeCanvasData, prepareCanvasDataForRender } from './utils';
+import { uploadAPI } from '../api';
+import { collectFontFamiliesFromNode, registerRuntimeFontFace } from './fontRuntime';
+import { applyImageCropAndScaleFromRatios, buildImageUrl, deserializeCanvasData, prepareCanvasJsonForRender } from './utils';
 
 // 画布配置常量（与CanvasEditor保持一致）
 const CANVAS_CONFIG = {
@@ -55,8 +57,50 @@ const DEFAULT_IMAGE_STROKE_SETTINGS: ImageStrokeSettings = {
   },
 };
 const STROKE_INNER_OVERLAP_PX = 3;
+let customFontCatalogPromise: Promise<Map<string, string>> | null = null;
 
 const clampValue = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
+const getCustomFontCatalog = async () => {
+  if (!customFontCatalogPromise) {
+    customFontCatalogPromise = uploadAPI.getFonts()
+      .then((fonts) => {
+        const catalog = new Map<string, string>();
+        fonts.forEach((font) => {
+          const family = String(font.font_family || font.display_name || '').trim();
+          const url = buildImageUrl(String(font.file_url || '').trim());
+          if (family && url) {
+            catalog.set(family, url);
+          }
+        });
+        return catalog;
+      })
+      .catch((error) => {
+        customFontCatalogPromise = null;
+        throw error;
+      });
+  }
+  return customFontCatalogPromise;
+};
+
+const ensureCanvasFontsLoaded = async (canvasJson: unknown) => {
+  const families = Array.from(collectFontFamiliesFromNode(canvasJson));
+  if (families.length === 0) {
+    return;
+  }
+  try {
+    const catalog = await getCustomFontCatalog();
+    await Promise.all(families.map(async (family) => {
+      const sourceUrl = catalog.get(family);
+      if (!sourceUrl) {
+        return false;
+      }
+      return registerRuntimeFontFace(family, sourceUrl);
+    }));
+  } catch (error) {
+    console.warn('[CanvasRenderer] 自定义字体预加载失败:', error);
+  }
+};
 
 const normalizeImageStrokeSettings = (raw?: Partial<ImageStrokeSettings> | null): ImageStrokeSettings => {
   const source = raw || {};
@@ -523,6 +567,14 @@ export async function renderCanvasToHighResImage(
     console.warn('画布数据解码失败:', error);
     throw error;
   }
+  let parsedCanvasJson: Record<string, any>;
+  try {
+    parsedCanvasJson = JSON.parse(resolved.canvasData);
+  } catch (error) {
+    console.warn('画布数据解析失败:', error);
+    throw error;
+  }
+  await ensureCanvasFontsLoaded(parsedCanvasJson);
   return new Promise((resolve, reject) => {
     const resolvedWidth = Number(canvasSize?.width);
     const resolvedHeight = Number(canvasSize?.height);
@@ -539,10 +591,10 @@ export async function renderCanvasToHighResImage(
     const multiplier = Math.min(4, Math.max(0.1, Number.isFinite(rawMultiplier) ? rawMultiplier : 1));
     const imageFormat = options?.imageFormat === 'jpeg' ? 'jpeg' : 'png';
     const normalizedQuality = Math.max(0.1, Math.min(1, Number(options?.quality ?? 1) || 1));
-    const preparedCanvasData = prepareCanvasDataForRender(
-      resolved.canvasData,
+    const preparedCanvasData = JSON.stringify(prepareCanvasJsonForRender(
+      parsedCanvasJson,
       options?.useOriginalAssets === false ? 'editor' : 'export'
-    );
+    ));
     const resetViewportTransform = (fabricCanvas: fabric.Canvas) => {
       fabricCanvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
     };
