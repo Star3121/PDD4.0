@@ -1007,14 +1007,15 @@ const OrderList: React.FC = () => {
                 : highResDataUrl;
               const imageBlob = dataUrlToBlob(exportDataUrl);
               const extension = options.imageFormat === 'jpg' ? 'jpg' : getBlobExtension(imageBlob);
+              const customerName = sanitizeFilename(order.customer_name || '未知客户');
               const productSpecs = sanitizeFilename(order.product_specs || '默认规格');
               
               let filename: string;
               if (exportPages.length === 1) {
-                filename = `${orderNumber}+${productSpecs}.${extension}`;
+                filename = `${orderNumber}+${customerName}+${productSpecs}.${extension}`;
               } else {
                 const suffix = String.fromCharCode(97 + j);
-                filename = `${orderNumber}${suffix}+${productSpecs}.${extension}`;
+                filename = `${orderNumber}${suffix}+${customerName}+${productSpecs}.${extension}`;
               }
               
               zip.file(`${folderPrefix}${filename}`, imageBlob);
@@ -1025,14 +1026,15 @@ const OrderList: React.FC = () => {
                   const imageUrl = buildImageUrl(exportPage.previewPath);
                   const imageBlob = await getImageBlob(imageUrl);
                   const extension = getExtensionFromBlob(imageBlob);
+                  const customerName = sanitizeFilename(order.customer_name || '未知客户');
                   const productSpecs = sanitizeFilename(order.product_specs || '默认规格');
                   
                   let filename: string;
                   if (exportPages.length === 1) {
-                    filename = `${orderNumber}+${productSpecs}_preview.${extension}`;
+                    filename = `${orderNumber}+${customerName}+${productSpecs}_preview.${extension}`;
                   } else {
                     const suffix = String.fromCharCode(97 + j);
-                    filename = `${orderNumber}${suffix}+${productSpecs}_preview.${extension}`;
+                    filename = `${orderNumber}${suffix}+${customerName}+${productSpecs}_preview.${extension}`;
                   }
                   
                   zip.file(`${folderPrefix}${filename}`, imageBlob);
